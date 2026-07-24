@@ -399,6 +399,122 @@ async function detail(secid: string) {
   };
 }
 
+async function fourMinuteSpeeds(secids: string[]) {
+  if (!secids.length) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "腾讯分时" } };
+  const items: Array<{ code: string; market: number; speed4m: number; pointTime: string }> = [];
+  const available: Array<Awaited<ReturnType<typeof resilientJson>>> = [];
+  let usedEastmoney = false;
+  let usedYahoo = false;
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(8, secids.length) }, async () => {
+    while (cursor < secids.length) {
+      const secid = secids[cursor];
+      cursor += 1;
+      try {
+        const [market, code] = secid.split(".");
+        let result: Awaited<ReturnType<typeof resilientJson>>;
+        let priced: Array<{ time: string; price: number }>;
+        if (market === "0" || market === "1") {
+          const symbol = `${market === "1" ? "sh" : "sz"}${code}`;
+          result = await resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${symbol}`, 12_000, { attempts: 2, timeoutMs: 2_200 });
+          const rows: string[] = result.value?.data?.[symbol]?.data?.data ?? [];
+          priced = rows.map((row) => {
+            const parts = row.split(" ");
+            return { time: `${parts[0]?.slice(0, 2)}:${parts[0]?.slice(2, 4)}`, price: numeric(parts[1]) };
+          }).filter((row): row is { time: string; price: number } => row.price !== null);
+        } else if (secid === "100.KS11") {
+          result = await resilientJson("https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1m&range=1d", 12_000, { attempts: 2, timeoutMs: 2_500 });
+          const chart = result.value?.chart?.result?.[0];
+          const timestamps: number[] = chart?.timestamp ?? [];
+          const closes: Array<number | null> = chart?.indicators?.quote?.[0]?.close ?? [];
+          priced = timestamps.map((timestamp, index) => ({ time: String(timestamp), price: numeric(closes[index]) }))
+            .filter((row): row is { time: string; price: number } => row.price !== null);
+          usedYahoo = true;
+        } else {
+          const url = `${EASTMONEY_HISTORY}/stock/trends2/get?secid=${encodeURIComponent(secid)}&ndays=1&iscr=0&iscca=0&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11&fields2=f51,f52,f53,f54,f55,f56,f57,f58`;
+          result = await resilientJson(url, 12_000, { attempts: 2, timeoutMs: 2_200 });
+          const rows: string[] = result.value?.data?.trends ?? [];
+          priced = rows.map((row) => {
+            const parts = row.split(",");
+            return { time: parts[0], price: numeric(parts[2]) };
+          }).filter((row): row is { time: string; price: number } => row.price !== null);
+          usedEastmoney = true;
+        }
+        const latest = priced.at(-1);
+        const reference = priced.at(-5);
+        if (latest && reference && reference.price !== 0) {
+          items.push({ code, market: Number(market), speed4m: ((latest.price - reference.price) / reference.price) * 100, pointTime: latest.time });
+          available.push(result);
+        }
+      } catch { /* Other symbols can still return while one upstream request fails. */ }
+    }
+  });
+  await Promise.all(workers);
+  if (!items.length || !available.length) throw new Error("四分钟涨速暂时无法连接");
+  const itemMap = new Map(items.map((item) => [`${item.market}.${item.code}`, item]));
+  const ordered = secids.map((secid) => itemMap.get(secid)).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const meta = metaFrom(...available);
+  return {
+    items: ordered,
+    meta: {
+      ...meta,
+      mode: ordered.length < secids.length ? "stale" as CacheMode : meta.mode,
+      source: ["腾讯分时", usedYahoo ? "Yahoo Finance" : "", usedEastmoney ? "东方财富" : ""].filter(Boolean).join(" + "),
+    },
+  };
+}
+
+function aShareTradingMinute(time: string) {
+  const match = time.match(/(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (!match) return null;
+  const minute = Number(match[1]) * 60 + Number(match[2]);
+  if (minute <= 11 * 60 + 30) return Math.min(Math.max(minute - (9 * 60 + 30), 0), 120);
+  if (minute >= 13 * 60) return Math.min(Math.max(120 + minute - 13 * 60, 120), 240);
+  return 120;
+}
+
+async function marketTurnover() {
+  const symbols = ["sh000001", "sz399001"];
+  const results = await Promise.all(symbols.map((symbol) => {
+    return resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/day/query?code=${symbol}`, 12_000, { attempts: 2, timeoutMs: 3_000 });
+  }));
+  const exchanges = results.map((result, index) => {
+    const days: Array<{ date: string; data: string[] }> = result.value?.data?.[symbols[index]]?.data ?? [];
+    const parseDay = (day: { date: string; data: string[] } | undefined) => {
+      if (!day?.date || !Array.isArray(day.data)) throw new Error("市场分钟成交额格式异常");
+      const rows = day.data.map((row) => {
+        const parts = row.split(" ");
+        const time = `${parts[0]?.slice(0, 2)}:${parts[0]?.slice(2, 4)}`;
+        return { time, minute: aShareTradingMinute(time), amount: numeric(parts[3]) };
+      }).filter((row): row is { time: string; minute: number; amount: number } => row.minute !== null && row.amount !== null);
+      return { date: `${day.date.slice(0, 4)}-${day.date.slice(4, 6)}-${day.date.slice(6, 8)}`, rows };
+    };
+    const current = parseDay(days[0]);
+    const previous = parseDay(days[1]);
+    return { current, previous, lastMinute: current.rows.at(-1)?.minute ?? 0 };
+  });
+  const cutoff = Math.min(...exchanges.map((exchange) => exchange.lastMinute));
+  const amountAt = (key: "current" | "previous") => exchanges.reduce((total, exchange) => {
+    const point = exchange[key].rows.filter((row) => row.minute <= cutoff).at(-1);
+    return total + (point?.amount ?? 0);
+  }, 0);
+  const currentAmount = amountAt("current");
+  const previousAmount = amountAt("previous");
+  if (currentAmount <= 0 || previousAmount <= 0) throw new Error("市场成交额暂不可用");
+  const point = exchanges[0].current.rows.filter((row) => row.minute <= cutoff).at(-1);
+  const delta = currentAmount - previousAmount;
+  return {
+    currentAmount,
+    previousAmount,
+    delta,
+    deltaPercent: (delta / previousAmount) * 100,
+    currentDate: exchanges[0].current.date,
+    previousDate: exchanges[0].previous.date,
+    pointTime: point?.time ?? "—",
+    meta: { ...metaFrom(...results), source: "腾讯沪深分钟成交额" },
+  };
+}
+
 const sectorFilters: Record<string, string> = {
   concept: "m:90+t:3",
   industry: "m:90+t:2",
@@ -479,6 +595,8 @@ export async function GET(request: Request) {
   try {
     if (action === "quotes") return json(await quotes(normalizeSecids(url.searchParams.get("secids"))));
     if (action === "detail") return json(await detail(url.searchParams.get("secid") ?? ""));
+    if (action === "speeds") return json(await fourMinuteSpeeds(normalizeSecids(url.searchParams.get("secids"))));
+    if (action === "market-turnover") return json(await marketTurnover());
     if (action === "sectors") return json(await sectors(url.searchParams.get("type") ?? "concept"));
     if (action === "sector-stocks") return json(await sectorStocks(url.searchParams.get("code") ?? ""));
     if (action === "capital") return json(await capital());

@@ -14,6 +14,11 @@ type Quote = Stock & {
 type Trend = { time: string; price: number | null; average: number | null; volume: number | null; amount: number | null };
 type Kline = { date: string; open: number | null; close: number | null; high: number | null; low: number | null; volume: number | null; amount: number | null; changePercent: number | null };
 type Detail = { quote: Quote; trends: Trend[]; klines: Kline[]; preClose: number | null; meta: MarketMeta };
+type Speed4 = { code: string; market: number; speed4m: number; pointTime: string };
+type MarketTurnover = {
+  currentAmount: number; previousAmount: number; delta: number; deltaPercent: number;
+  currentDate: string; previousDate: string; pointTime: string; meta: MarketMeta;
+};
 type Sector = { code: string; name: string; change: number | null; speed: number | null; inflow: number | null };
 type SectorStock = Stock & { price: number | null; change: number | null; speed: number | null; inflow: number | null };
 type CapitalData = {
@@ -56,6 +61,13 @@ const amount = (value: number | null | undefined) => {
   if (abs >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
   if (abs >= 1e4) return `${(value / 1e4).toFixed(1)}万`;
   return value.toFixed(0);
+};
+const marketAmount = (value: number | null | undefined) => {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  if (abs >= 1e12) return `${(value / 1e12).toFixed(2)}万亿`;
+  if (abs >= 1e8) return `${(value / 1e8).toFixed(abs >= 1e11 ? 0 : 1)}亿`;
+  return amount(value);
 };
 const shortTime = (stamp?: number) => stamp ? new Date(stamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "—";
 
@@ -267,6 +279,8 @@ export function StockTerminal() {
   const [hydrated, setHydrated] = useState(false);
   const [activeKey, setActiveKey] = useState(keyOf(DEFAULT_STOCKS[0]));
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [speeds4m, setSpeeds4m] = useState<Record<string, number>>({});
+  const [marketTurnover, setMarketTurnover] = useState<MarketTurnover | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [chartMode, setChartMode] = useState<ChartMode>("time");
   const [meta, setMeta] = useState<MarketMeta | null>(null);
@@ -282,6 +296,8 @@ export function StockTerminal() {
   const detailRequest = useRef(0);
   const quoteBusy = useRef(false);
   const detailBusy = useRef<string | null>(null);
+  const speedBusy = useRef(false);
+  const turnoverBusy = useRef(false);
 
   useEffect(() => {
     try {
@@ -354,6 +370,46 @@ export function StockTerminal() {
     return () => window.clearInterval(timer);
   }, [refreshQuotes]);
 
+  const refreshSpeeds = useCallback(async () => {
+    if (!watchlist.length || speedBusy.current) return;
+    speedBusy.current = true;
+    try {
+      const secids = watchlist.map(keyOf).join(",");
+      const data = await fetchJson<{ items: Speed4[]; meta: MarketMeta }>(`/api/market?action=speeds&secids=${encodeURIComponent(secids)}`, 20_000);
+      setSpeeds4m((current) => {
+        const next = { ...current };
+        data.items.forEach((item) => { next[`${item.market}.${item.code}`] = item.speed4m; });
+        return next;
+      });
+    } catch { /* Keep the previous four-minute readings until the next successful refresh. */ }
+    finally { speedBusy.current = false; }
+  }, [watchlist]);
+
+  useEffect(() => {
+    const initial = window.setTimeout(refreshSpeeds, 2_500);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshSpeeds();
+    }, 20_000);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+  }, [refreshSpeeds]);
+
+  const refreshMarketTurnover = useCallback(async () => {
+    if (turnoverBusy.current) return;
+    turnoverBusy.current = true;
+    try {
+      setMarketTurnover(await fetchJson<MarketTurnover>("/api/market?action=market-turnover", 15_000));
+    } catch { /* Keep the latest verified market total during a temporary upstream interruption. */ }
+    finally { turnoverBusy.current = false; }
+  }, []);
+
+  useEffect(() => {
+    refreshMarketTurnover();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshMarketTurnover();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [refreshMarketTurnover]);
+
   const refreshDetail = useCallback(async (silent = false) => {
     const stock = watchlist.find((item) => keyOf(item) === activeKey) || watchlist[0];
     if (!stock) { setDetail(null); return; }
@@ -389,9 +445,9 @@ export function StockTerminal() {
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([refreshQuotes(true), refreshDetail(true)]);
+    await Promise.all([refreshQuotes(true), refreshDetail(true), refreshSpeeds(), refreshMarketTurnover()]);
     setRefreshing(false);
-  }, [refreshDetail, refreshQuotes]);
+  }, [refreshDetail, refreshMarketTurnover, refreshQuotes, refreshSpeeds]);
 
   useEffect(() => {
     if (!notice) return;
@@ -519,13 +575,17 @@ export function StockTerminal() {
             <span>{quote.name}</span><strong>{number(quote.price)}</strong><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em>
           </button>
         )) : <span className="strip-loading">正在连接行情源…</span>}
+        <div className="turnover-summary" title={marketTurnover ? `当前 ${marketTurnover.currentDate} ${marketTurnover.pointTime}，对比 ${marketTurnover.previousDate} 同期` : "正在汇总沪深两市成交额"}>
+          <span>两市成交额</span><strong>{marketTurnover ? marketAmount(marketTurnover.currentAmount) : "同步中…"}</strong>
+          {marketTurnover && <em className={tone(marketTurnover.delta)}>{marketTurnover.delta >= 0 ? "较上日同期放量" : "较上日同期缩量"} {marketAmount(Math.abs(marketTurnover.delta))}（{signed(marketTurnover.deltaPercent)}）</em>}
+        </div>
         <div className="source-note">数据源 {meta?.source || "东方财富"} · 3秒自动刷新</div>
       </div>
 
       {page === "watch" && <div className="watch-layout">
         <aside className="watch-sidebar panel">
           <div className="panel-title"><div><span>WATCHLIST</span><strong>我的自选</strong></div><em>{watchlist.length}</em></div>
-          <div className="watch-columns"><span>名称 / 代码</span><span>最新 / 涨幅</span></div>
+          <div className="watch-columns"><span>名称 / 代码</span><span>最新 / 涨幅</span><span>4分涨速</span></div>
           <div className="watch-list">
             {displayedStocks.map((stock) => {
               const key = keyOf(stock); const quote = quotes[key];
@@ -533,6 +593,7 @@ export function StockTerminal() {
                 className={`watch-row ${activeKey === key ? "active" : ""}`} onClick={() => setActiveKey(key)} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
                 <div className="stock-identity"><div><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></div><small>{stock.code}<em>{stock.market === 1 ? "SH" : stock.market === 0 ? "SZ" : "KR"}</em></small></div>
                 <div className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></div>
+                <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
                 <button className="row-menu" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ key, x: rect.right - 150, y: rect.bottom + 6 }); }} aria-label={`${stock.name} 操作`}>•••</button>
               </div>;
             })}
