@@ -143,7 +143,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
     grid(ctx, width, height, pad);
     const plotW = width - pad.l - pad.r;
     const plotH = height - pad.t - pad.b;
-    ctx.font = '11px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif';
+    ctx.font = '500 12px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif';
     ctx.fillStyle = "#6f7f91";
     if (!detail || (mode === "time" ? !detail.trends.length : !detail.klines.length)) {
       ctx.textAlign = "center";
@@ -256,7 +256,7 @@ function FlowChart({ rows }: { rows: CapitalData["flow"] }) {
     ctx.lineTo(x(values.length - 1), height - pad.b); ctx.lineTo(pad.l, height - pad.b); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
     ctx.beginPath(); values.forEach((value, index) => index ? ctx.lineTo(x(index), y(value)) : ctx.moveTo(x(index), y(value)));
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
-    ctx.fillStyle = "#7f8fa1"; ctx.font = '11px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif'; ctx.textAlign = "right";
+    ctx.fillStyle = "#657789"; ctx.font = '500 12px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif'; ctx.textAlign = "right";
     ctx.fillText(`${(maxAbs / 1e8).toFixed(0)}亿`, pad.l - 8, pad.t + 4); ctx.fillText("0", pad.l - 8, y(0) + 4); ctx.fillText(`${(-maxAbs / 1e8).toFixed(0)}亿`, pad.l - 8, height - pad.b);
     ctx.textAlign = "center";
     [0, Math.floor(rows.length / 2), rows.length - 1].forEach((index) => rows[index] && ctx.fillText(rows[index].time.slice(11, 16), x(index), height - 10));
