@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type PageKey = "watch" | "sector" | "capital";
 type ChartMode = "time" | "day";
@@ -220,7 +220,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       });
     }
   }, [detail, mode]);
-  return <canvas className="market-canvas" ref={ref} aria-label={mode === "time" ? "分时走势" : "日K走势"} />;
+  return <canvas className="market-canvas" ref={ref} role="img" aria-label={mode === "time" ? "分时走势" : "日K走势"} />;
 }
 
 function Sparkline({ values, value }: { values: number[]; value: number | null | undefined }) {
@@ -232,7 +232,8 @@ function Sparkline({ values, value }: { values: number[]; value: number | null |
     values.forEach((item, index) => {
       const x = (index / (values.length - 1)) * width;
       const y = 4 + ((max - item) / span) * (height - 8);
-      index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      if (index) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
     });
     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
   }, [values, value]);
@@ -261,15 +262,15 @@ function FlowChart({ rows }: { rows: CapitalData["flow"] }) {
     ctx.textAlign = "center";
     [0, Math.floor(rows.length / 2), rows.length - 1].forEach((index) => rows[index] && ctx.fillText(rows[index].time.slice(11, 16), x(index), height - 10));
   }, [rows]);
-  return <canvas ref={ref} className="flow-canvas" aria-label="沪深300主力资金净流入曲线" />;
+  return <canvas ref={ref} className="flow-canvas" role="img" aria-label="沪深300主力资金净流入曲线" />;
 }
 
 function LoadingRows({ count = 7 }: { count?: number }) {
-  return <div className="loading-rows" aria-label="加载中">{Array.from({ length: count }, (_, index) => <div className="loading-row" key={index} />)}</div>;
+  return <div className="loading-rows" role="status" aria-live="polite"><span className="sr-only">加载中…</span>{Array.from({ length: count }, (_, index) => <div className="loading-row" aria-hidden="true" key={index} />)}</div>;
 }
 
 function EmptyState({ title, detail }: { title: string; detail: string }) {
-  return <div className="empty-state"><div className="empty-orbit">◎</div><strong>{title}</strong><span>{detail}</span></div>;
+  return <div className="empty-state" role="status" aria-live="polite"><div className="empty-orbit" aria-hidden="true">◎</div><strong>{title}</strong><span>{detail}</span></div>;
 }
 
 export function StockTerminal() {
@@ -539,39 +540,40 @@ export function StockTerminal() {
 
   return (
     <div className="terminal-shell">
+      <a className="skip-link" href="#main-content">跳到主要内容</a>
       <header className="topbar">
         <div className="brand-block">
-          <div className="brand-mark"><span />〈</div>
+          <div className="brand-mark" aria-hidden="true"><span />〈</div>
           <div><strong>星辰大海</strong><small>MARKET INTELLIGENCE</small></div>
         </div>
         <nav className="main-tabs" aria-label="主要页面">
           {([ ["watch", "自选行情"], ["sector", "板块雷达"], ["capital", "资金流向"] ] as Array<[PageKey, string]>).map(([key, label]) => (
-            <button key={key} className={page === key ? "active" : ""} onClick={() => setPage(key)}>{label}</button>
+            <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => setPage(key)}>{label}</button>
           ))}
         </nav>
         <div className="top-actions">
-          <div className={`network-pill ${connection}`} title="页面保留最近一次成功数据，失败时不会伪造更新时间">
-            <i />
+          <div className={`network-pill ${connection}`} role="status" aria-live="polite" title="页面保留最近一次成功数据，失败时不会伪造更新时间">
+            <i aria-hidden="true" />
             <span>{connection === "loading" ? "连接中" : connection === "online" ? "实时同步" : connection === "stale" ? "沿用缓存" : "网络中断"}</span>
             <time>{shortTime(meta?.updatedAt)}</time>
           </div>
-          <form className="search" onSubmit={submitSearch}>
-            <span className="search-icon">⌕</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="股票名称 / 代码" aria-label="搜索股票" />
-            {query && <button type="button" className="search-clear" onClick={() => { setQuery(""); setSuggestions([]); }}>×</button>}
-            {(searching || suggestions.length > 0) && <div className="suggestions">
+          <form className="search" role="search" onSubmit={submitSearch}>
+            <span className="search-icon" aria-hidden="true">⌕</span>
+            <input name="stock-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="股票名称 / 代码…" aria-label="搜索股票" />
+            {query && <button type="button" className="search-clear" aria-label="清空股票搜索" onClick={() => { setQuery(""); setSuggestions([]); }}>×</button>}
+            {(searching || suggestions.length > 0) && <div className="suggestions" aria-live="polite">
               {searching && <div className="suggest-status">正在检索市场…</div>}
               {!searching && suggestions.map((stock) => <button type="button" key={keyOf(stock)} onClick={() => addStock(stock)}><span><strong>{stock.name}</strong><small>{stock.code}</small></span><em>{stock.market === 1 ? "沪市" : "深市"}</em></button>)}
             </div>}
           </form>
-          <button className="refresh-button" onClick={refreshAll} disabled={refreshing} aria-label="立即刷新行情与分时图"><span className={refreshing ? "spin" : ""}>↻</span><b>刷新</b></button>
+          <button type="button" className="refresh-button" onClick={refreshAll} disabled={refreshing} aria-label="立即刷新行情与分时图"><span className={refreshing ? "spin" : ""} aria-hidden="true">↻</span><b>刷新</b></button>
         </div>
       </header>
 
-      <div className="market-strip">
-        <div className="strip-label"><i /> 市场脉搏</div>
+      <section className="market-strip" aria-label="市场脉搏">
+        <div className="strip-label"><i aria-hidden="true" /> 市场脉搏</div>
         {indexStocks.length ? indexStocks.map((quote) => (
-          <button key={keyOf(quote)} className="ticker" onClick={() => { setPage("watch"); setActiveKey(keyOf(quote)); }}>
+          <button type="button" key={keyOf(quote)} className="ticker" onClick={() => { setPage("watch"); setActiveKey(keyOf(quote)); }}>
             <span>{quote.name}</span><strong>{number(quote.price)}</strong><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em>
           </button>
         )) : <span className="strip-loading">正在连接行情源…</span>}
@@ -580,9 +582,9 @@ export function StockTerminal() {
           {marketTurnover && <em className={tone(marketTurnover.delta)}>{marketTurnover.delta >= 0 ? "较上日同期放量" : "较上日同期缩量"} {marketAmount(Math.abs(marketTurnover.delta))}（{signed(marketTurnover.deltaPercent)}）</em>}
         </div>
         <div className="source-note">数据源 {meta?.source || "东方财富"} · 3秒自动刷新</div>
-      </div>
+      </section>
 
-      {page === "watch" && <div className="watch-layout">
+      {page === "watch" && <div className="watch-layout" id="main-content">
         <aside className="watch-sidebar panel">
           <div className="panel-title"><div><span>WATCHLIST</span><strong>我的自选</strong></div><em>{watchlist.length}</em></div>
           <div className="watch-columns"><span>名称 / 代码</span><span>最新 / 涨幅</span><span>4分涨速</span></div>
@@ -590,11 +592,13 @@ export function StockTerminal() {
             {displayedStocks.map((stock) => {
               const key = keyOf(stock); const quote = quotes[key];
               return <div key={key} draggable onDragStart={() => { dragged.current = key; }} onDragOver={(event) => event.preventDefault()} onDrop={() => dropOn(key)}
-                className={`watch-row ${activeKey === key ? "active" : ""}`} onClick={() => setActiveKey(key)} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
-                <div className="stock-identity"><div><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></div><small>{stock.code}<em>{stock.market === 1 ? "SH" : stock.market === 0 ? "SZ" : "KR"}</em></small></div>
-                <div className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></div>
-                <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
-                <button className="row-menu" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ key, x: rect.right - 150, y: rect.bottom + 6 }); }} aria-label={`${stock.name} 操作`}>•••</button>
+                className={`watch-row ${activeKey === key ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
+                <button type="button" className="watch-select" aria-pressed={activeKey === key} onClick={() => setActiveKey(key)}>
+                  <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small>{stock.code}<em>{stock.market === 1 ? "SH" : stock.market === 0 ? "SZ" : "KR"}</em></small></span>
+                  <span className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></span>
+                  <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
+                </button>
+                <button type="button" className="row-menu" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ key, x: rect.right - 150, y: rect.bottom + 6 }); }} aria-label={`${stock.name} 操作`}>•••</button>
               </div>;
             })}
             {!watchlist.length && <EmptyState title="自选列表为空" detail="在顶部搜索并添加股票" />}
@@ -610,11 +614,11 @@ export function StockTerminal() {
               <div className="metric-grid">
                 {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
               </div>
-            </> : <div className="hero-loading"><div /><div /><div /></div>}
+            </> : <div className="hero-loading" role="status" aria-label="正在加载个股行情"><div /><div /><div /></div>}
           </section>
 
           <section className="chart-panel panel">
-            <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-switch"><button className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div>
+            <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div>
             <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <span><i className="avg-line" />均价</span>}<em>{detail?.meta.mode === "stale" ? `上游波动 · 最近行情点 ${chartLastPoint || "—"}` : `${chartMode === "time" ? "实时行情点" : "最新交易日"} ${chartLastPoint || "—"} · 3秒更新`}</em></div>
             <MarketChart detail={detail} mode={chartMode} />
           </section>
@@ -630,13 +634,13 @@ export function StockTerminal() {
       {page === "sector" && <SectorPage onPick={(stock) => addStock(stock)} updateConnection={updateConnection} />}
       {page === "capital" && <CapitalPage updateConnection={updateConnection} />}
 
-      {menu && <div className="context-menu" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }} onClick={(event) => event.stopPropagation()}>
-        <button onClick={() => togglePin(menu.key)}><span>◆</span>{pinned.has(menu.key) ? "取消固定" : "固定置顶"}</button>
-        <button onClick={() => moveStock(menu.key, "top")}><span>↑</span>移至顶部</button>
-        <button onClick={() => moveStock(menu.key, "bottom")}><span>↓</span>移至底部</button>
-        <button className="danger" onClick={() => removeStock(menu.key)}><span>×</span>删除自选</button>
+      {menu && <div className="context-menu" role="menu" aria-label="自选股操作" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }}>
+        <button type="button" role="menuitem" onClick={() => togglePin(menu.key)}><span aria-hidden="true">◆</span>{pinned.has(menu.key) ? "取消固定" : "固定置顶"}</button>
+        <button type="button" role="menuitem" onClick={() => moveStock(menu.key, "top")}><span aria-hidden="true">↑</span>移至顶部</button>
+        <button type="button" role="menuitem" onClick={() => moveStock(menu.key, "bottom")}><span aria-hidden="true">↓</span>移至底部</button>
+        <button type="button" role="menuitem" className="danger" onClick={() => removeStock(menu.key)}><span aria-hidden="true">×</span>删除自选</button>
       </div>}
-      {notice && <div className="toast">{notice}</div>}
+      {notice && <div className="toast" role="status" aria-live="polite">{notice}</div>}
     </div>
   );
 }
@@ -709,12 +713,12 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
   const sortedStocks = useMemo(() => [...stocks].sort((a, b) => ((b[stockSort] || 0) - (a[stockSort] || 0))), [stockSort, stocks]);
   const changeSort = (next: typeof sort) => { if (sort === next) setDescending((value) => !value); else { setSort(next); setDescending(true); } };
 
-  return <div className="sector-layout">
+  return <div className="sector-layout" id="main-content">
     <aside className="sector-sidebar panel">
       <div className="panel-title"><div><span>SECTOR RADAR</span><strong>板块强弱</strong></div><em>{sectors.length}</em></div>
-      <div className="segmented"><button className={type === "concept" ? "active" : ""} onClick={() => setType("concept")}>概念板块</button><button className={type === "industry" ? "active" : ""} onClick={() => setType("industry")}>行业板块</button></div>
+      <div className="segmented"><button type="button" aria-pressed={type === "concept"} className={type === "concept" ? "active" : ""} onClick={() => setType("concept")}>概念板块</button><button type="button" aria-pressed={type === "industry"} className={type === "industry" ? "active" : ""} onClick={() => setType("industry")}>行业板块</button></div>
       <div className="sector-sort"><span>排序</span><button className={sort === "change" ? "active" : ""} onClick={() => changeSort("change")}>涨幅 {sort === "change" ? descending ? "↓" : "↑" : ""}</button><button className={sort === "speed" ? "active" : ""} onClick={() => changeSort("speed")}>涨速</button><button className={sort === "inflow" ? "active" : ""} onClick={() => changeSort("inflow")}>净流入</button></div>
-      <div className="sector-list">{loading ? <LoadingRows count={10} /> : error ? <EmptyState title="板块连接失败" detail={error} /> : !sortedSectors.length ? <EmptyState title="暂无可用板块" detail="实时分类数据正在恢复" /> : sortedSectors.map((sector, index) => <button key={sector.code} className={active?.code === sector.code ? "active" : ""} onClick={() => setActive(sector)}><em>{String(index + 1).padStart(2, "0")}</em><span><strong>{sector.name}</strong><small>{amount(sector.inflow)}</small></span><b className={tone(sector.change)}>{signed(sector.change)}</b></button>)}</div>
+      <div className="sector-list" aria-label="板块列表">{loading ? <LoadingRows count={10} /> : error ? <EmptyState title="板块连接失败" detail={error} /> : !sortedSectors.length ? <EmptyState title="暂无可用板块" detail="实时分类数据正在恢复" /> : sortedSectors.map((sector, index) => <button type="button" key={sector.code} aria-pressed={active?.code === sector.code} className={active?.code === sector.code ? "active" : ""} onClick={() => setActive(sector)}><em>{String(index + 1).padStart(2, "0")}</em><span><strong>{sector.name}</strong><small>{amount(sector.inflow)}</small></span><b className={tone(sector.change)}>{signed(sector.change)}</b></button>)}</div>
     </aside>
     <main className="sector-main panel">
       <div className="sector-hero"><div><span>{type === "concept" ? "CONCEPT" : "INDUSTRY"} / {active?.code || "—"}</span><h1>{active?.name || "选择一个板块"}</h1><p>{type === "industry" ? "参考同花顺行业分类 · 已合并重复层级" : "参考同花顺概念分类 · 已排除涨停、新高等行情标签"}</p></div>{active && <div className="sector-stat"><span>板块涨幅</span><strong className={tone(active.change)}>{signed(active.change)}</strong><em>净流入 {amount(active.inflow)}</em></div>}</div>
@@ -736,9 +740,9 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
   }, [updateConnection]);
   useEffect(() => { load(); const timer = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 30_000); return () => window.clearInterval(timer); }, [load]);
   const mainNet = data?.flow.at(-1)?.main ?? null;
-  if (loading && !data) return <div className="capital-layout"><section className="capital-main panel"><LoadingRows count={12} /></section></div>;
-  if (error && !data) return <div className="capital-layout"><section className="capital-main panel"><EmptyState title="资金流连接失败" detail={error} /><button className="retry" onClick={load}>重新连接</button></section></div>;
-  return <div className="capital-layout">
+  if (loading && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><LoadingRows count={12} /></section></div>;
+  if (error && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><EmptyState title="资金流连接失败" detail={error} /><button type="button" className="retry" onClick={load}>重新连接</button></section></div>;
+  return <div className="capital-layout" id="main-content">
     <main className="capital-main panel">
       <div className="capital-hero"><div><span>CAPITAL FLOW / 000300</span><h1>沪深300资金温度</h1><p>主力资金净流入逐分钟累计值</p></div><div className="capital-price"><small>{data?.quote.name}</small><strong>{number(data?.quote.price)}</strong><em className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</em></div></div>
       <div className="capital-kpis"><div><span>主力净流入</span><strong className={tone(mainNet)}>{amount(mainNet)}</strong><em>当前累计</em></div><div><span>沪深300涨幅</span><strong className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</strong><em>指数表现</em></div><div><span>行情涨速</span><strong className={tone(data?.quote.speed)}>{signed(data?.quote.speed)}</strong><em>短时动量</em></div><div><span>最近同步</span><strong>{shortTime(data?.meta.updatedAt)}</strong><em>{data?.meta.mode === "stale" ? "缓存保护" : "实时数据"}</em></div></div>
