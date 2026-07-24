@@ -16,13 +16,13 @@ export async function generateMetadata(): Promise<Metadata> {
       title: "星辰大海 · 市场研究台",
       description,
       type: "website",
-      images: [{ url: `${origin}/og.png`, width: 1200, height: 630, alt: "星辰大海市场研究台" }],
+      images: [{ url: `${origin}/og-light.png`, width: 1200, height: 630, alt: "星辰大海市场研究台" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "星辰大海 · 市场研究台",
       description,
-      images: [`${origin}/og.png`],
+      images: [`${origin}/og-light.png`],
     },
   };
 }

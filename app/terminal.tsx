@@ -95,7 +95,7 @@ function useCanvas(draw: (ctx: CanvasRenderingContext2D, width: number, height: 
 }
 
 function grid(ctx: CanvasRenderingContext2D, width: number, height: number, pad: { l: number; r: number; t: number; b: number }) {
-  ctx.strokeStyle = "rgba(255,255,255,.065)";
+  ctx.strokeStyle = "rgba(24,48,72,.09)";
   ctx.lineWidth = 1;
   ctx.setLineDash([3, 5]);
   for (let i = 0; i <= 4; i += 1) {
@@ -256,6 +256,7 @@ export function StockTerminal() {
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const dragged = useRef<string | null>(null);
   const quoteRequest = useRef(0);
+  const detailRequest = useRef(0);
 
   useEffect(() => {
     try {
@@ -322,15 +323,39 @@ export function StockTerminal() {
     return () => window.clearInterval(timer);
   }, [refreshQuotes]);
 
+  const refreshDetail = useCallback(async (silent = false) => {
+    const stock = watchlist.find((item) => keyOf(item) === activeKey) || watchlist[0];
+    if (!stock) { setDetail(null); return; }
+    const requestId = ++detailRequest.current;
+    try {
+      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(keyOf(stock))}`);
+      if (requestId !== detailRequest.current) return;
+      setDetail(data);
+      updateConnection(data.meta);
+    } catch (error) {
+      if (requestId === detailRequest.current && !silent) {
+        setNotice(error instanceof Error ? error.message : "个股数据加载失败");
+      }
+    }
+  }, [activeKey, updateConnection, watchlist]);
+
   useEffect(() => {
-    if (!activeStock) { setDetail(null); return; }
-    let cancelled = false;
     setDetail(null);
-    fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(keyOf(activeStock))}`)
-      .then((data) => { if (!cancelled) { setDetail(data); updateConnection(data.meta); } })
-      .catch((error) => { if (!cancelled) { setNotice(error instanceof Error ? error.message : "个股数据加载失败"); } });
-    return () => { cancelled = true; };
+    refreshDetail(false);
   }, [activeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (page === "watch" && document.visibilityState === "visible") refreshDetail(true);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [page, refreshDetail]);
+
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([refreshQuotes(true), refreshDetail(true)]);
+    setRefreshing(false);
+  }, [refreshDetail, refreshQuotes]);
 
   useEffect(() => {
     if (!notice) return;
@@ -416,6 +441,9 @@ export function StockTerminal() {
   };
 
   const indexStocks = [quotes["1.000001"], quotes["0.399001"], quotes["100.KS11"]].filter(Boolean);
+  const chartLastPoint = chartMode === "time"
+    ? detail?.trends.at(-1)?.time?.split(" ").at(-1)?.slice(0, 8)
+    : detail?.klines.at(-1)?.date;
 
   return (
     <div className="terminal-shell">
@@ -444,7 +472,7 @@ export function StockTerminal() {
               {!searching && suggestions.map((stock) => <button type="button" key={keyOf(stock)} onClick={() => addStock(stock)}><span><strong>{stock.name}</strong><small>{stock.code}</small></span><em>{stock.market === 1 ? "沪市" : "深市"}</em></button>)}
             </div>}
           </form>
-          <button className="refresh-button" onClick={() => refreshQuotes()} disabled={refreshing} aria-label="立即刷新"><span className={refreshing ? "spin" : ""}>↻</span><b>刷新</b></button>
+          <button className="refresh-button" onClick={refreshAll} disabled={refreshing} aria-label="立即刷新行情与分时图"><span className={refreshing ? "spin" : ""}>↻</span><b>刷新</b></button>
         </div>
       </header>
 
@@ -490,7 +518,7 @@ export function StockTerminal() {
 
           <section className="chart-panel panel">
             <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-switch"><button className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <span><i className="avg-line" />均价</span>}<em>{detail?.meta.mode === "stale" ? "上游波动，展示最近成功数据" : "数据已通过服务端校验"}</em></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <span><i className="avg-line" />均价</span>}<em>{detail?.meta.mode === "stale" ? `上游波动 · 最近行情点 ${chartLastPoint || "—"}` : `${chartMode === "time" ? "实时行情点" : "最新交易日"} ${chartLastPoint || "—"} · 10秒更新`}</em></div>
             <MarketChart detail={detail} mode={chartMode} />
           </section>
         </main>
