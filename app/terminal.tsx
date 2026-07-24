@@ -109,6 +109,18 @@ function grid(ctx: CanvasRenderingContext2D, width: number, height: number, pad:
   ctx.setLineDash([]);
 }
 
+function aShareSessionProgress(time: string, fallbackIndex: number) {
+  const match = time.match(/(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (!match) return Math.min(Math.max(fallbackIndex, 0), 240) / 240;
+  const minute = Number(match[1]) * 60 + Number(match[2]);
+  const tradingMinute = minute <= 11 * 60 + 30
+    ? minute - (9 * 60 + 30)
+    : minute >= 13 * 60
+      ? 120 + minute - 13 * 60
+      : 120;
+  return Math.min(Math.max(tradingMinute, 0), 240) / 240;
+}
+
 function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode }) {
   const ref = useCanvas((ctx, width, height) => {
     const pad = { l: 48, r: 18, t: 24, b: 36 };
@@ -130,25 +142,32 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       const span = Math.max(...prices.map((p) => Math.abs(p - base)), base * 0.006, 0.01);
       const min = base - span * 1.18;
       const max = base + span * 1.18;
-      const x = (index: number) => pad.l + (index / Math.max(rows.length - 1, 1)) * plotW;
+      const x = (row: Trend, index: number) => pad.l + aShareSessionProgress(row.time, index) * plotW;
       const y = (value: number) => pad.t + ((max - value) / (max - min)) * plotH;
+      const lastRow = rows.at(-1) as Trend;
+      const lastX = x(lastRow, rows.length - 1);
 
       const gradient = ctx.createLinearGradient(0, pad.t, 0, height - pad.b);
       gradient.addColorStop(0, "rgba(77,181,255,.24)");
       gradient.addColorStop(1, "rgba(77,181,255,0)");
       ctx.beginPath();
-      rows.forEach((row, index) => index ? ctx.lineTo(x(index), y(row.price as number)) : ctx.moveTo(x(index), y(row.price as number)));
-      ctx.lineTo(x(rows.length - 1), height - pad.b); ctx.lineTo(pad.l, height - pad.b); ctx.closePath();
+      rows.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.price as number)) : ctx.moveTo(x(row, index), y(row.price as number)));
+      ctx.lineTo(lastX, height - pad.b); ctx.lineTo(pad.l, height - pad.b); ctx.closePath();
       ctx.fillStyle = gradient; ctx.fill();
 
       ctx.beginPath();
-      rows.forEach((row, index) => index ? ctx.lineTo(x(index), y(row.price as number)) : ctx.moveTo(x(index), y(row.price as number)));
+      rows.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.price as number)) : ctx.moveTo(x(row, index), y(row.price as number)));
       ctx.strokeStyle = "#55b9ff"; ctx.lineWidth = 1.8; ctx.stroke();
 
       const averages = rows.filter((row) => row.average !== null);
       ctx.beginPath();
-      averages.forEach((row, index) => index ? ctx.lineTo(x(index), y(row.average as number)) : ctx.moveTo(x(index), y(row.average as number)));
+      averages.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.average as number)) : ctx.moveTo(x(row, index), y(row.average as number)));
       ctx.strokeStyle = "#d7ae66"; ctx.lineWidth = 1.15; ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(lastX, y(lastRow.price as number), 2.8, 0, Math.PI * 2);
+      ctx.fillStyle = "#55b9ff";
+      ctx.fill();
 
       ctx.textAlign = "right"; ctx.fillStyle = "#7f8fa1";
       ctx.fillText(max.toFixed(2), pad.l - 8, pad.t + 4);
