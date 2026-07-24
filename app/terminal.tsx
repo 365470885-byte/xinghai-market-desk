@@ -257,6 +257,8 @@ export function StockTerminal() {
   const dragged = useRef<string | null>(null);
   const quoteRequest = useRef(0);
   const detailRequest = useRef(0);
+  const quoteBusy = useRef(false);
+  const detailBusy = useRef<string | null>(null);
 
   useEffect(() => {
     try {
@@ -292,7 +294,9 @@ export function StockTerminal() {
 
   const refreshQuotes = useCallback(async (silent = false) => {
     if (!watchlist.length) return;
+    if (silent && quoteBusy.current) return;
     const requestId = ++quoteRequest.current;
+    quoteBusy.current = true;
     if (!silent) setRefreshing(true);
     try {
       const secids = watchlist.map(keyOf).join(",");
@@ -300,7 +304,10 @@ export function StockTerminal() {
       if (requestId !== quoteRequest.current) return;
       setQuotes((current) => {
         const next = { ...current };
-        data.items.forEach((item) => { next[keyOf(item)] = item; });
+        data.items.forEach((item) => {
+          const local = watchlist.find((stock) => keyOf(stock) === keyOf(item));
+          next[keyOf(item)] = { ...item, name: item.name || local?.name || item.code };
+        });
         return next;
       });
       updateConnection(data.meta);
@@ -310,6 +317,7 @@ export function StockTerminal() {
         if (!silent) setNotice(error instanceof Error ? error.message : "刷新失败");
       }
     } finally {
+      if (requestId === quoteRequest.current) quoteBusy.current = false;
       if (!silent) setRefreshing(false);
     }
   }, [quotes, updateConnection, watchlist]);
@@ -319,16 +327,19 @@ export function StockTerminal() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") refreshQuotes(true);
-    }, 10_000);
+    }, 3_000);
     return () => window.clearInterval(timer);
   }, [refreshQuotes]);
 
   const refreshDetail = useCallback(async (silent = false) => {
     const stock = watchlist.find((item) => keyOf(item) === activeKey) || watchlist[0];
     if (!stock) { setDetail(null); return; }
+    const stockKey = keyOf(stock);
+    if (silent && detailBusy.current === stockKey) return;
     const requestId = ++detailRequest.current;
+    detailBusy.current = stockKey;
     try {
-      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(keyOf(stock))}`);
+      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}`);
       if (requestId !== detailRequest.current) return;
       setDetail(data);
       updateConnection(data.meta);
@@ -336,6 +347,8 @@ export function StockTerminal() {
       if (requestId === detailRequest.current && !silent) {
         setNotice(error instanceof Error ? error.message : "个股数据加载失败");
       }
+    } finally {
+      if (requestId === detailRequest.current) detailBusy.current = null;
     }
   }, [activeKey, updateConnection, watchlist]);
 
@@ -347,7 +360,7 @@ export function StockTerminal() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (page === "watch" && document.visibilityState === "visible") refreshDetail(true);
-    }, 10_000);
+    }, 3_000);
     return () => window.clearInterval(timer);
   }, [page, refreshDetail]);
 
@@ -483,7 +496,7 @@ export function StockTerminal() {
             <span>{quote.name}</span><strong>{number(quote.price)}</strong><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em>
           </button>
         )) : <span className="strip-loading">正在连接行情源…</span>}
-        <div className="source-note">数据源 {meta?.source || "东方财富"} · 10秒自动刷新</div>
+        <div className="source-note">数据源 {meta?.source || "东方财富"} · 3秒自动刷新</div>
       </div>
 
       {page === "watch" && <div className="watch-layout">
@@ -518,7 +531,7 @@ export function StockTerminal() {
 
           <section className="chart-panel panel">
             <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-switch"><button className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <span><i className="avg-line" />均价</span>}<em>{detail?.meta.mode === "stale" ? `上游波动 · 最近行情点 ${chartLastPoint || "—"}` : `${chartMode === "time" ? "实时行情点" : "最新交易日"} ${chartLastPoint || "—"} · 10秒更新`}</em></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <span><i className="avg-line" />均价</span>}<em>{detail?.meta.mode === "stale" ? `上游波动 · 最近行情点 ${chartLastPoint || "—"}` : `${chartMode === "time" ? "实时行情点" : "最新交易日"} ${chartLastPoint || "—"} · 3秒更新`}</em></div>
             <MarketChart detail={detail} mode={chartMode} />
           </section>
         </main>

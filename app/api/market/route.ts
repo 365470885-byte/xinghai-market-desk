@@ -1,4 +1,5 @@
-export const runtime = "edge";
+export const runtime = "nodejs";
+export const preferredRegion = "iad1";
 
 type CacheMode = "live" | "cache" | "stale";
 
@@ -21,7 +22,9 @@ function numeric(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function resilientJson(url: string, ttlMs = 8_000) {
+type RequestOptions = { attempts?: number; timeoutMs?: number };
+
+async function resilientJson(url: string, ttlMs = 8_000, options: RequestOptions = {}) {
   const now = Date.now();
   const cached = responseCache.get(url);
   if (cached && cached.freshUntil > now) {
@@ -33,9 +36,10 @@ async function resilientJson(url: string, ttlMs = 8_000) {
 
   const request = (async () => {
     let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    const attempts = options.attempts ?? 3;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6_500);
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6_500);
       try {
         const response = await fetch(url, {
           signal: controller.signal,
@@ -57,7 +61,7 @@ async function resilientJson(url: string, ttlMs = 8_000) {
         return { value, fetchedAt, mode: "live" as CacheMode };
       } catch (error) {
         lastError = error;
-        if (attempt < 2) await sleep(260 * (attempt + 1));
+        if (attempt < attempts - 1) await sleep(260 * (attempt + 1));
       } finally {
         clearTimeout(timer);
       }
@@ -78,18 +82,23 @@ async function resilientJson(url: string, ttlMs = 8_000) {
   }
 }
 
-async function resilientText(url: string, ttlMs = 8_000) {
+async function resilientText(url: string, ttlMs = 8_000, options: RequestOptions = {}) {
   const now = Date.now();
   const cached = responseCache.get(url);
   if (cached && cached.freshUntil > now && typeof cached.value === "string") {
     return { value: cached.value, fetchedAt: cached.fetchedAt, mode: "cache" as CacheMode };
   }
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const attempts = options.attempts ?? 3;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6_500);
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6_500);
     try {
-      const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
+      const response = await fetch(url, {
+        signal: controller.signal,
+        cache: "no-store",
+        headers: { Accept: "*/*", Referer: "https://finance.sina.com.cn/" },
+      });
       if (!response.ok) throw new Error(`备用行情返回 ${response.status}`);
       const value = await response.text();
       if (!value) throw new Error("备用行情为空");
@@ -98,7 +107,7 @@ async function resilientText(url: string, ttlMs = 8_000) {
       return { value, fetchedAt, mode: "live" as CacheMode };
     } catch (error) {
       lastError = error;
-      if (attempt < 2) await sleep(260 * (attempt + 1));
+      if (attempt < attempts - 1) await sleep(260 * (attempt + 1));
     } finally { clearTimeout(timer); }
   }
   const fallback = responseCache.get(url);
@@ -167,13 +176,142 @@ function normalizeSecids(raw: string | null) {
   return raw.split(",").map((item) => item.trim()).filter((item) => /^\d{1,3}\.[A-Z0-9]{4,8}$/i.test(item)).slice(0, 80);
 }
 
+function parseSinaQuotes(text: string, requested: string[]) {
+  const requestedBySymbol = new Map<string, string>();
+  requested.forEach((secid) => {
+    const [market, code] = secid.split(".");
+    if (market === "1" && /^\d{6}$/.test(code)) requestedBySymbol.set(`sh${code}`, secid);
+    if (market === "0" && /^\d{6}$/.test(code)) requestedBySymbol.set(`sz${code}`, secid);
+    if (market === "100" && code === "KS11") requestedBySymbol.set("b_KOSPI", secid);
+  });
+  const items: ReturnType<typeof parseQuote>[] = [];
+  const pattern = /var\s+hq_str_(sh\d{6}|sz\d{6}|b_KOSPI)="([^"]*)";/g;
+  for (const match of text.matchAll(pattern)) {
+    const secid = requestedBySymbol.get(match[1]);
+    if (!secid) continue;
+    const [marketText, code] = secid.split(".");
+    const parts = match[2].split(",");
+    if (match[1] === "b_KOSPI") {
+      items.push({
+        code,
+        market: Number(marketText),
+        name: "",
+        price: numeric(parts[1]),
+        changePercent: numeric(parts[3]),
+        speed: null,
+        high: numeric(parts[10]),
+        low: numeric(parts[11]),
+        open: numeric(parts[8]),
+        prevClose: numeric(parts[9]),
+        volume: numeric(parts[12]),
+        amount: null,
+        turnover: null,
+        amplitude: null,
+        netInflow: null,
+        limitUp: null,
+        limitDown: null,
+      });
+      continue;
+    }
+    const open = numeric(parts[1]);
+    const prevClose = numeric(parts[2]);
+    const current = numeric(parts[3]);
+    const price = current && current > 0 ? current : prevClose;
+    const changePercent = price !== null && prevClose && prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null;
+    items.push({
+      code,
+      market: Number(marketText),
+      name: "",
+      price,
+      changePercent,
+      speed: null,
+      high: numeric(parts[4]),
+      low: numeric(parts[5]),
+      open,
+      prevClose,
+      volume: numeric(parts[8]),
+      amount: numeric(parts[9]),
+      turnover: null,
+      amplitude: prevClose && prevClose > 0 && numeric(parts[4]) !== null && numeric(parts[5]) !== null
+        ? (((numeric(parts[4]) as number) - (numeric(parts[5]) as number)) / prevClose) * 100
+        : null,
+      netInflow: null,
+      limitUp: null,
+      limitDown: null,
+    });
+  }
+  return items;
+}
+
 async function quotes(secids: string[]) {
-  if (!secids.length) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "东方财富" } };
-  const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
-  const url = `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=${fields}&secids=${encodeURIComponent(secids.join(","))}`;
-  const result = await resilientJson(url, 8_000);
-  const items = (result.value?.data?.diff ?? []).map((item: Record<string, unknown>) => parseQuote(item));
-  return { items, meta: metaFrom(result) };
+  if (!secids.length) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "新浪行情" } };
+  type QuoteBatch = {
+    items: ReturnType<typeof parseQuote>[];
+    results: Array<{ value: unknown; fetchedAt: number; mode: CacheMode }>;
+    source: string;
+  };
+
+  const sinaPromise: Promise<QuoteBatch> = (async () => {
+    const symbols = secids.map((secid) => {
+      const [market, code] = secid.split(".");
+      return market === "1" ? `sh${code}` : market === "0" ? `sz${code}` : secid === "100.KS11" ? "b_KOSPI" : "";
+    }).filter(Boolean);
+    const result = await resilientText(`https://hq.sinajs.cn/list=${symbols.join(",")}`, 2_000, { attempts: 1, timeoutMs: 2_400 });
+    return { items: parseSinaQuotes(result.value, secids), results: [result], source: "新浪行情" };
+  })();
+
+  const eastmoneyPromise: Promise<QuoteBatch> = (async () => {
+    const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
+    const chunks: string[][] = [];
+    for (let index = 0; index < secids.length; index += 6) chunks.push(secids.slice(index, index + 6));
+    const settled = await Promise.allSettled(chunks.map((chunk) => {
+      const url = `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=${fields}&secids=${encodeURIComponent(chunk.join(","))}`;
+      return resilientJson(url, 2_000, { attempts: 1, timeoutMs: 2_400 });
+    }));
+    const results = settled
+      .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof resilientJson>>> => result.status === "fulfilled")
+      .map((result) => result.value);
+    if (!results.length) throw new Error("东方财富行情暂不可用");
+    const items = results.flatMap((result) => (result.value?.data?.diff ?? [])
+      .map((item: Record<string, unknown>) => parseQuote(item))
+      .filter((item: ReturnType<typeof parseQuote>) => item.code));
+    return { items, results, source: "东方财富" };
+  })();
+
+  const requireComplete = (promise: Promise<QuoteBatch>) => promise.then((batch) => {
+    const keys = new Set(batch.items.map((item) => `${item.market}.${item.code}`));
+    if (secids.some((secid) => !keys.has(secid))) throw new Error(`${batch.source}返回不完整`);
+    return batch;
+  });
+
+  let batch: QuoteBatch;
+  try {
+    batch = await Promise.any([requireComplete(sinaPromise), requireComplete(eastmoneyPromise)]);
+  } catch {
+    const partials = await Promise.allSettled([sinaPromise, eastmoneyPromise]);
+    const quoteMap = new Map<string, ReturnType<typeof parseQuote>>();
+    const results: QuoteBatch["results"] = [];
+    const sources: string[] = [];
+    partials.forEach((partial) => {
+      if (partial.status !== "fulfilled") return;
+      partial.value.items.forEach((item) => quoteMap.set(`${item.market}.${item.code}`, item));
+      results.push(...partial.value.results);
+      sources.push(partial.value.source);
+    });
+    const items = secids.map((secid) => quoteMap.get(secid)).filter((item): item is ReturnType<typeof parseQuote> => Boolean(item));
+    if (!items.length || !results.length) throw new Error("自选行情暂时无法连接");
+    batch = { items, results, source: sources.join(" + ") };
+  }
+
+  const meta = metaFrom(...batch.results);
+  return {
+    items: batch.items,
+    meta: {
+      ...meta,
+      mode: batch.items.length < secids.length ? "stale" as CacheMode : meta.mode,
+      source: batch.source,
+    },
+  };
 }
 
 async function detail(secid: string) {
@@ -182,18 +320,18 @@ async function detail(secid: string) {
   const quoteUrl = `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=${quoteFields}&secids=${encodeURIComponent(secid)}`;
   const trendsUrl = `${EASTMONEY_HISTORY}/stock/trends2/get?secid=${encodeURIComponent(secid)}&ndays=1&iscr=0&iscca=0&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11&fields2=f51,f52,f53,f54,f55,f56,f57,f58`;
   const klineUrl = `${EASTMONEY_HISTORY}/stock/kline/get?secid=${encodeURIComponent(secid)}&klt=101&fqt=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&end=20500101&lmt=45`;
-  // These endpoints share upstream connection limits. Sequential requests avoid
-  // synchronized resets while each result still benefits from cache and retry.
-  const settled: Array<PromiseSettledResult<Awaited<ReturnType<typeof resilientJson>>>> = [];
-  for (const [url, ttl] of [[quoteUrl, 7_000], [trendsUrl, 7_000], [klineUrl, 90_000]] as const) {
-    try { settled.push({ status: "fulfilled", value: await resilientJson(url, ttl) }); }
-    catch (reason) { settled.push({ status: "rejected", reason }); }
-  }
+  // Quote, intraday and daily data are independent. Running them together keeps
+  // a three-second refresh from being delayed by three sequential round trips.
+  const settled = await Promise.allSettled([
+    resilientJson(quoteUrl, 2_000, { attempts: 2, timeoutMs: 4_000 }),
+    resilientJson(trendsUrl, 2_000, { attempts: 2, timeoutMs: 4_000 }),
+    resilientJson(klineUrl, 90_000, { attempts: 2, timeoutMs: 4_000 }),
+  ]);
   const available = settled.filter((item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof resilientJson>>> => item.status === "fulfilled").map((item) => item.value);
-  if (!available.length) throw new Error("个股行情暂时无法连接");
   const quoteResult = settled[0].status === "fulfilled" ? settled[0].value : null;
   const trendsResult = settled[1].status === "fulfilled" ? settled[1].value : null;
   const klineResult = settled[2].status === "fulfilled" ? settled[2].value : null;
+  const realtimeAvailable = [quoteResult, trendsResult].filter((item): item is Awaited<ReturnType<typeof resilientJson>> => Boolean(item));
 
   let trends = (trendsResult?.value?.data?.trends ?? []).map((row: string) => {
     const parts = row.split(",");
@@ -208,20 +346,33 @@ async function detail(secid: string) {
     };
   });
 
+  let quote = parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {});
   let usedSina = false;
   const [marketText, code] = secid.split(".");
   const market = Number(marketText);
-  if ((!trends.length || !klines.length) && (market === 0 || market === 1)) {
+  if ((quote.price === null || !trends.length || !klines.length) && (market === 0 || market === 1)) {
     const symbol = `${market === 1 ? "sh" : "sz"}${code}`;
+    if (quote.price === null) {
+      try {
+        const sinaQuote = await resilientText(`https://hq.sinajs.cn/list=${symbol}`, 2_000, { attempts: 2, timeoutMs: 4_000 });
+        const fallbackQuote = parseSinaQuotes(sinaQuote.value, [secid])[0];
+        if (fallbackQuote) {
+          quote = fallbackQuote;
+          available.push(sinaQuote);
+          realtimeAvailable.push(sinaQuote);
+          usedSina = true;
+        }
+      } catch { /* Intraday or daily data can still keep the panel useful. */ }
+    }
     if (!trends.length) {
       try {
-        const sinaTrend = await resilientText(`https://quotes.sina.cn/cn/api/jsonp_v2.php/callback/CN_MinlineService.getMinlineData?symbol=${symbol}`, 7_000);
+        const sinaTrend = await resilientText(`https://quotes.sina.cn/cn/api/jsonp_v2.php/callback/CN_MinlineService.getMinlineData?symbol=${symbol}`, 2_000, { attempts: 2, timeoutMs: 4_000 });
         const rows = parseSinaJsonp(sinaTrend.value) ?? [];
         trends = rows.map((row: Record<string, unknown>) => ({
           time: String(row.m ?? ""), price: numeric(row.p), average: numeric(row.avg_p),
           volume: numeric(row.v ?? row.tot_v), amount: numeric(row.amount),
         })).filter((item: { price: number | null }) => item.price !== null);
-        available.push(sinaTrend); usedSina = true;
+        available.push(sinaTrend); realtimeAvailable.push(sinaTrend); usedSina = true;
       } catch { /* Quote data remains usable if the backup intraday feed also fails. */ }
     }
     if (!klines.length) {
@@ -237,12 +388,14 @@ async function detail(secid: string) {
     }
   }
 
+  if (!available.length) throw new Error("个股行情暂时无法连接");
+
   return {
-    quote: { ...parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {}), market: Number(secid.split(".")[0]) },
+    quote: { ...quote, market: Number(secid.split(".")[0]) },
     trends,
     klines,
     preClose: numeric(trendsResult?.value?.data?.preClose ?? trendsResult?.value?.data?.prePrice),
-    meta: { ...metaFrom(...available), source: usedSina ? "东方财富 + 新浪行情" : "东方财富" },
+    meta: { ...metaFrom(...(realtimeAvailable.length ? realtimeAvailable : available)), source: usedSina ? "东方财富 + 新浪行情" : "东方财富" },
   };
 }
 
