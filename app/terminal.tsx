@@ -651,7 +651,10 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
   const [descending, setDescending] = useState(true);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [detailNonce, setDetailNonce] = useState(0);
   const [error, setError] = useState("");
+  const sectorStockCache = useRef(new Map<string, { items: SectorStock[]; sector?: { change: number | null; inflow: number | null } }>());
 
   useEffect(() => {
     let cancelled = false; setLoading(true); setError("");
@@ -664,13 +667,43 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
 
   useEffect(() => {
     if (!active) { setStocks([]); return; }
-    let cancelled = false; setDetailLoading(true);
-    fetchJson<{ items: SectorStock[]; meta: MarketMeta }>(`/api/market?action=sector-stocks&code=${active.code}`)
-      .then((data) => { if (!cancelled) { setStocks(data.items); updateConnection(data.meta); } })
-      .catch(() => { if (!cancelled) setStocks([]); })
-      .finally(() => { if (!cancelled) setDetailLoading(false); });
+    let cancelled = false;
+    const activeCode = active.code;
+    const cached = sectorStockCache.current.get(activeCode);
+    setStocks(cached?.items ?? []);
+    setDetailError("");
+    setDetailLoading(true);
+    const load = async () => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const data = await fetchJson<{ items: SectorStock[]; sector?: { change: number | null; inflow: number | null }; meta: MarketMeta }>(`/api/market?action=sector-stocks&code=${activeCode}`, 6_000);
+          if (!data.items.length) throw new Error("成分股暂未返回");
+          if (cancelled) return;
+          sectorStockCache.current.set(activeCode, { items: data.items, sector: data.sector });
+          setStocks(data.items);
+          if (data.sector) {
+            setSectors((current) => current.map((sector) => sector.code === activeCode ? { ...sector, ...data.sector } : sector));
+            setActive((current) => current?.code === activeCode ? { ...current, ...data.sector } : current);
+          }
+          setDetailError("");
+          updateConnection(data.meta);
+          return;
+        } catch (nextError) {
+          lastError = nextError;
+          if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 450));
+        }
+      }
+      if (cancelled) return;
+      if (cached?.items.length) setDetailError("网络波动，正在显示本次访问中最近成功的数据");
+      else {
+        setStocks([]);
+        setDetailError(lastError instanceof Error ? lastError.message : "成分股连接失败");
+      }
+    };
+    load().finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
-  }, [active, updateConnection]);
+  }, [active?.code, detailNonce, updateConnection]);
 
   const sortedSectors = useMemo(() => [...sectors].sort((a, b) => ((b[sort] || 0) - (a[sort] || 0)) * (descending ? 1 : -1)), [descending, sectors, sort]);
   const sortedStocks = useMemo(() => [...stocks].sort((a, b) => ((b[stockSort] || 0) - (a[stockSort] || 0))), [stockSort, stocks]);
@@ -685,8 +718,8 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
     </aside>
     <main className="sector-main panel">
       <div className="sector-hero"><div><span>{type === "concept" ? "CONCEPT" : "INDUSTRY"} / {active?.code || "—"}</span><h1>{active?.name || "选择一个板块"}</h1><p>{type === "industry" ? "参考同花顺行业分类 · 已合并重复层级" : "参考同花顺概念分类 · 已排除涨停、新高等行情标签"}</p></div>{active && <div className="sector-stat"><span>板块涨幅</span><strong className={tone(active.change)}>{signed(active.change)}</strong><em>净流入 {amount(active.inflow)}</em></div>}</div>
-      <div className="table-toolbar"><div><strong>成分股</strong><span>{stocks.length} 支</span></div><div className="table-sorts"><button className={stockSort === "change" ? "active" : ""} onClick={() => setStockSort("change")}>涨幅</button><button className={stockSort === "speed" ? "active" : ""} onClick={() => setStockSort("speed")}>涨速</button><button className={stockSort === "inflow" ? "active" : ""} onClick={() => setStockSort("inflow")}>资金</button></div></div>
-      <div className="stock-table"><div className="table-head"><span>排名</span><span>股票</span><span>最新价</span><span>涨跌幅</span><span>涨速</span><span>主力净流入</span><span /></div>{detailLoading ? <LoadingRows count={9} /> : sortedStocks.map((stock, index) => <button className="table-row" key={`${stock.market}.${stock.code}`} onClick={() => onPick(stock)}><span>{String(index + 1).padStart(2, "0")}</span><span><strong>{stock.name}</strong><small>{stock.code}</small></span><span>{number(stock.price)}</span><span className={tone(stock.change)}>{signed(stock.change)}</span><span className={tone(stock.speed)}>{signed(stock.speed)}</span><span className={tone(stock.inflow)}>{amount(stock.inflow)}</span><span>＋自选</span></button>)}</div>
+      <div className="table-toolbar"><div><strong>成分股</strong><span>{detailLoading && !stocks.length ? "连接中…" : `${stocks.length} 支`}</span></div><div className="table-sorts"><button className={stockSort === "change" ? "active" : ""} onClick={() => setStockSort("change")}>涨幅</button><button className={stockSort === "speed" ? "active" : ""} onClick={() => setStockSort("speed")}>涨速</button><button className={stockSort === "inflow" ? "active" : ""} onClick={() => setStockSort("inflow")}>资金</button></div></div>
+      <div className="stock-table"><div className="table-head"><span>排名</span><span>股票</span><span>最新价</span><span>涨跌幅</span><span>涨速</span><span>主力净流入</span><span /></div>{detailLoading && !stocks.length ? <LoadingRows count={6} /> : detailError && !stocks.length ? <div className="sector-detail-error"><strong>成分股暂时没有返回</strong><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>立即重试</button></div> : <>{detailError && <div className="sector-cache-note"><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>重新连接</button></div>}{sortedStocks.map((stock, index) => <button className="table-row" key={`${stock.market}.${stock.code}`} onClick={() => onPick(stock)}><span>{String(index + 1).padStart(2, "0")}</span><span><strong>{stock.name}</strong><small>{stock.code}</small></span><span>{number(stock.price)}</span><span className={tone(stock.change)}>{signed(stock.change)}</span><span className={tone(stock.speed)}>{signed(stock.speed)}</span><span className={tone(stock.inflow)}>{amount(stock.inflow)}</span><span>＋自选</span></button>)}</>}</div>
     </main>
   </div>;
 }

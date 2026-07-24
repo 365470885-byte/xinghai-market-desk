@@ -272,6 +272,11 @@ button:focus-visible, input:focus-visible { outline: 1px solid var(--blue); outl
 .table-toolbar span { color: #7d8b99; font-size: 11px; font-weight: 500; }
 .table-sorts { display: flex; gap: 3px; }
 .stock-table { flex: 1; overflow: auto; }
+.sector-detail-error { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; color: var(--muted); text-align: center; }
+.sector-detail-error strong { color: var(--text); font-size: 14px; font-weight: 650; }
+.sector-detail-error span { font-size: 11px; font-weight: 500; }
+.sector-detail-error button, .sector-cache-note button { height: 30px; padding: 0 12px; border: 1px solid #b9965d; border-radius: 4px; background: #fffaf0; color: #865e1f; font-size: 11px; font-weight: 600; cursor: pointer; }
+.sector-cache-note { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 18px; border-bottom: 1px solid #eadfcf; background: #fffaf0; color: #76664d; font-size: 11px; font-weight: 500; }
 .table-head, .table-row { display: grid; grid-template-columns: 50px minmax(150px, 1fr) 100px 100px 90px 130px 70px; align-items: center; padding: 0 18px; }
 .table-head { height: 38px; position: sticky; top: 0; z-index: 3; background: #f7f9fb; border-bottom: 1px solid var(--line); color: #7d8b99; font-size: 11px; font-weight: 600; }
 .table-row { width: 100%; min-height: 61px; border: 0; border-bottom: 1px solid rgba(220, 228, 235, .8); background: transparent; cursor: pointer; text-align: left; }

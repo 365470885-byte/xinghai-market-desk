@@ -588,6 +588,55 @@ const THS_INDUSTRIES = new Set([
   "油气开采及服务", "游戏", "元件", "造纸", "证券", "中药", "种植业与林业", "专用设备", "自动化设备", "综合",
 ]);
 
+const THS_INDUSTRY_CATALOG = [
+  { code: "THS881121", name: "半导体" }, { code: "THS881171", name: "自动化设备" },
+  { code: "THS881279", name: "光伏设备" }, { code: "THS881281", name: "电池" },
+  { code: "THS881277", name: "电机" },
+  { code: "THS881129", name: "通信设备" }, { code: "THS881272", name: "软件开发" },
+  { code: "THS881271", name: "IT服务" }, { code: "THS881126", name: "汽车零部件" },
+  { code: "THS881125", name: "汽车整车" }, { code: "THS881124", name: "消费电子" },
+  { code: "THS881170", name: "小金属" }, { code: "THS881267", name: "能源金属" },
+  { code: "THS881145", name: "电力" }, { code: "THS881278", name: "电网设备" },
+  { code: "THS881166", name: "军工装备" }, { code: "THS881276", name: "军工电子" },
+  { code: "THS881155", name: "银行" }, { code: "THS881157", name: "证券" },
+  { code: "THS881156", name: "保险" }, { code: "THS881273", name: "白酒" },
+  { code: "THS881131", name: "白色家电" }, { code: "THS881122", name: "光学光电子" },
+  { code: "THS881130", name: "计算机设备" }, { code: "THS881270", name: "元件" },
+  { code: "THS881172", name: "电子化学品" }, { code: "THS881280", name: "风电设备" },
+  { code: "THS881117", name: "通用设备" }, { code: "THS881118", name: "专用设备" },
+  { code: "THS881268", name: "工程机械" }, { code: "THS881269", name: "轨交设备" },
+  { code: "THS881168", name: "工业金属" }, { code: "THS881169", name: "贵金属" },
+  { code: "THS881114", name: "金属新材料" }, { code: "THS881112", name: "钢铁" },
+  { code: "THS881167", name: "非金属材料" }, { code: "THS881108", name: "化学原料" },
+  { code: "THS881109", name: "化学制品" }, { code: "THS881264", name: "化学纤维" },
+  { code: "THS881265", name: "塑料制品" }, { code: "THS881266", name: "橡胶制品" },
+  { code: "THS881263", name: "农化制品" }, { code: "THS881105", name: "煤炭开采加工" },
+  { code: "THS881107", name: "油气开采及服务" }, { code: "THS881180", name: "石油加工贸易" },
+  { code: "THS881146", name: "燃气" }, { code: "THS881282", name: "其他电源设备" },
+  { code: "THS881284", name: "环保设备" }, { code: "THS881181", name: "环境治理" },
+  { code: "THS881140", name: "化学制药" }, { code: "THS881141", name: "中药" },
+  { code: "THS881142", name: "生物制品" }, { code: "THS881143", name: "医药商业" },
+  { code: "THS881144", name: "医疗器械" }, { code: "THS881175", name: "医疗服务" },
+  { code: "THS881182", name: "美容护理" }, { code: "THS881101", name: "种植业与林业" },
+  { code: "THS881102", name: "养殖业" }, { code: "THS881103", name: "农产品加工" },
+  { code: "THS881134", name: "食品加工制造" }, { code: "THS881133", name: "饮料制造" },
+  { code: "THS881173", name: "小家电" }, { code: "THS881174", name: "厨卫电器" },
+  { code: "THS881132", name: "黑色家电" }, { code: "THS881139", name: "家居用品" },
+  { code: "THS881138", name: "包装印刷" }, { code: "THS881137", name: "造纸" },
+  { code: "THS881135", name: "纺织制造" }, { code: "THS881136", name: "服装家纺" },
+  { code: "THS881123", name: "其他电子" }, { code: "THS881128", name: "汽车服务及其他" },
+  { code: "THS881162", name: "通信服务" }, { code: "THS881153", name: "房地产" },
+  { code: "THS881115", name: "建筑材料" }, { code: "THS881116", name: "建筑装饰" },
+  { code: "THS881149", name: "公路铁路运输" }, { code: "THS881148", name: "港口航运" },
+  { code: "THS881151", name: "机场航运" }, { code: "THS881152", name: "物流" },
+  { code: "THS881177", name: "互联网电商" }, { code: "THS881158", name: "零售" },
+  { code: "THS881159", name: "贸易" }, { code: "THS881160", name: "旅游及酒店" },
+  { code: "THS881164", name: "文化传媒" }, { code: "THS881274", name: "影视院线" },
+  { code: "THS881275", name: "游戏" }, { code: "THS881178", name: "教育" },
+  { code: "THS881179", name: "其他社会服务" }, { code: "THS881283", name: "多元金融" },
+  { code: "THS881165", name: "综合" },
+] as const;
+
 const THS_CONCEPTS = new Set([
   "2026一季报预增", "2026中报预增", "3D打印", "5G", "6G概念", "AI PC", "AI视频", "AI手机", "AI应用", "AI语料",
   "AI智能体", "BC电池", "DeepSeek概念", "EDR概念", "ERP概念", "ETC", "F5G概念", "MCU芯片", "MiniLED", "NFT概念",
@@ -684,23 +733,35 @@ async function thsIndustryStocks(code: string) {
     };
   }).filter((item) => /^\d{6}$/.test(item.code) && item.name);
   if (!items.length) throw new Error("同花顺行业成分股暂不可用");
-  return { items, meta: { ...metaFrom(result), source: "同花顺行情" } };
+  const change = numeric(result.value.match(/<dt>\s*板块涨幅\s*<\/dt>\s*<dd[^>]*>([-+\d.]+)%/i)?.[1]);
+  const inflowYi = numeric(result.value.match(/<dt>\s*资金净流入\(亿\)\s*<\/dt>\s*<dd[^>]*>([-+\d.]+)/i)?.[1]);
+  return {
+    items,
+    sector: { change, inflow: inflowYi === null ? null : inflowYi * 1e8 },
+    meta: { ...metaFrom(result), source: "同花顺行情" },
+  };
 }
 
 async function sectors(type: string) {
+  if (type === "industry") {
+    return {
+      items: THS_INDUSTRY_CATALOG.map((item) => ({ ...item, change: null, speed: null, inflow: null })),
+      meta: { mode: "cache" as CacheMode, updatedAt: Date.now(), source: "同花顺行业分类" },
+    };
+  }
   const fs = sectorFilters[type] ?? sectorFilters.concept;
-  const pageCount = 6;
+  const pageCount = 2;
   const results: Array<Awaited<ReturnType<typeof resilientJson>>> = [];
   let pageCursor = 1;
-  // Two workers avoid the upstream throttling seen when all six classification
-  // pages are requested at once, while still keeping the first load quick.
+  // Two small pages are enough for a useful concept radar and avoid making the
+  // first screen wait for the full upstream taxonomy.
   await Promise.all(Array.from({ length: 2 }, async () => {
     while (pageCursor <= pageCount) {
       const page = pageCursor;
       pageCursor += 1;
       const url = `${EASTMONEY}/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(fs)}&fields=f12,f14,f3,f22,f62`;
       try {
-        results.push(await resilientJson(url, 20_000, { attempts: 2, timeoutMs: 4_000 }));
+        results.push(await resilientJson(url, 30_000, { attempts: 1, timeoutMs: 2_500 }));
       } catch { /* A partial classified list is preferable to a blank radar. */ }
     }
   }));
