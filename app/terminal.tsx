@@ -44,6 +44,10 @@ const PINNED_KEY = "xinghai_pinned_v1";
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
 const signed = (value: number | null | undefined, suffix = "%") => value === null || value === undefined || !Number.isFinite(value) ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}${suffix}`;
+const relativePercent = (value: number | null | undefined, base: number | null | undefined) =>
+  value === null || value === undefined || base === null || base === undefined || !Number.isFinite(value) || !Number.isFinite(base) || base === 0
+    ? "—"
+    : signed(((value - base) / base) * 100);
 const tone = (value: number | null | undefined) => value === null || value === undefined || value === 0 ? "flat" : value > 0 ? "up" : "down";
 const number = (value: number | null | undefined, digits = 2) => value === null || value === undefined || !Number.isFinite(value) ? "—" : value.toFixed(digits);
 const amount = (value: number | null | undefined) => {
@@ -127,7 +131,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
     grid(ctx, width, height, pad);
     const plotW = width - pad.l - pad.r;
     const plotH = height - pad.t - pad.b;
-    ctx.font = "11px ui-monospace, SFMono-Regular, Consolas, monospace";
+    ctx.font = '11px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif';
     ctx.fillStyle = "#6f7f91";
     if (!detail || (mode === "time" ? !detail.trends.length : !detail.klines.length)) {
       ctx.textAlign = "center";
@@ -240,7 +244,7 @@ function FlowChart({ rows }: { rows: CapitalData["flow"] }) {
     ctx.lineTo(x(values.length - 1), height - pad.b); ctx.lineTo(pad.l, height - pad.b); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
     ctx.beginPath(); values.forEach((value, index) => index ? ctx.lineTo(x(index), y(value)) : ctx.moveTo(x(index), y(value)));
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
-    ctx.fillStyle = "#7f8fa1"; ctx.font = "11px ui-monospace, Consolas, monospace"; ctx.textAlign = "right";
+    ctx.fillStyle = "#7f8fa1"; ctx.font = '11px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif'; ctx.textAlign = "right";
     ctx.fillText(`${(maxAbs / 1e8).toFixed(0)}亿`, pad.l - 8, pad.t + 4); ctx.fillText("0", pad.l - 8, y(0) + 4); ctx.fillText(`${(-maxAbs / 1e8).toFixed(0)}亿`, pad.l - 8, height - pad.b);
     ctx.textAlign = "center";
     [0, Math.floor(rows.length / 2), rows.length - 1].forEach((index) => rows[index] && ctx.fillText(rows[index].time.slice(11, 16), x(index), height - 10));
@@ -543,7 +547,7 @@ export function StockTerminal() {
               <div className="quote-heading"><div className="quote-symbol"><span>{activeQuote.market === 1 ? "SH" : activeQuote.market === 0 ? "SZ" : "KR"}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {activeQuote.market === 100 ? "韩国交易所" : "人民币普通股"}</p></div></div><div className="quote-updated"><i className={connection === "online" ? "live" : ""} />行情时间 {shortTime(detail?.meta.updatedAt || meta?.updatedAt)}</div></div>
               <div className="price-cluster"><strong className={tone(activeQuote.changePercent)}>{number(activeQuote.price)}</strong><div className={tone(activeQuote.changePercent)}><span>{signed(activeQuote.changePercent)}</span><small>较前收 {number(activeQuote.prevClose)}</small></div></div>
               <div className="metric-grid">
-                {[ ["今开", number(activeQuote.open)], ["最高", number(activeQuote.high)], ["最低", number(activeQuote.low)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
+                {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
               </div>
             </> : <div className="hero-loading"><div /><div /><div /></div>}
           </section>

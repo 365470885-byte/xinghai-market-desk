@@ -335,7 +335,7 @@ async function detail(secid: string) {
 
   let trends = (trendsResult?.value?.data?.trends ?? []).map((row: string) => {
     const parts = row.split(",");
-    return { time: parts[0], price: numeric(parts[1]), average: numeric(parts[2]), volume: numeric(parts[3]), amount: numeric(parts[4]) };
+    return { time: parts[0], price: numeric(parts[2]), average: numeric(parts[7]), volume: numeric(parts[5]), amount: numeric(parts[6]) };
   }).filter((item: { price: number | null }) => item.price !== null);
 
   let klines = (klineResult?.value?.data?.klines ?? []).map((row: string) => {
