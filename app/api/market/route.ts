@@ -117,6 +117,59 @@ async function resilientText(url: string, ttlMs = 8_000, options: RequestOptions
   throw lastError instanceof Error ? lastError : new Error("备用行情暂不可用");
 }
 
+async function resilientGbkText(url: string, ttlMs = 30_000, options: RequestOptions = {}) {
+  const cacheKey = `gbk:${url}`;
+  const now = Date.now();
+  const cached = responseCache.get(cacheKey);
+  if (cached && cached.freshUntil > now && typeof cached.value === "string") {
+    return { value: cached.value, fetchedAt: cached.fetchedAt, mode: "cache" as CacheMode };
+  }
+  let lastError: unknown;
+  const attempts = options.attempts ?? 2;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6_000);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        cache: "no-store",
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          Referer: "https://q.10jqka.com.cn/",
+          "User-Agent": "Mozilla/5.0 (compatible; XinghaiMarketDesk/1.0)",
+        },
+      });
+      if (!response.ok) throw new Error(`同花顺分类返回 ${response.status}`);
+      const value = new TextDecoder("gbk").decode(await response.arrayBuffer());
+      if (!value.includes("<html")) throw new Error("同花顺分类为空");
+      const fetchedAt = Date.now();
+      responseCache.set(cacheKey, { value, fetchedAt, freshUntil: fetchedAt + ttlMs, staleUntil: fetchedAt + Math.max(300_000, ttlMs * 20) });
+      return { value, fetchedAt, mode: "live" as CacheMode };
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) await sleep(320 * (attempt + 1));
+    } finally { clearTimeout(timer); }
+  }
+  const fallback = responseCache.get(cacheKey);
+  if (fallback && fallback.staleUntil > Date.now() && typeof fallback.value === "string") {
+    return { value: fallback.value, fetchedAt: fallback.fetchedAt, mode: "stale" as CacheMode };
+  }
+  throw lastError instanceof Error ? lastError : new Error("同花顺分类暂不可用");
+}
+
+function htmlCellText(value: string) {
+  return value
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function htmlCells(row: string) {
+  return Array.from(row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi), (match) => htmlCellText(match[1]));
+}
+
 function parseSinaJsonp(text: string) {
   const marker = "callback(";
   const start = text.indexOf(marker);
@@ -520,18 +573,179 @@ const sectorFilters: Record<string, string> = {
   industry: "m:90+t:2",
 };
 
+// Keep the industry selector aligned with the 90-category Tonghuashun industry
+// directory. Eastmoney remains the quote source so change, speed, flow and
+// constituent-stock fields use the same live feed as the rest of the app.
+const THS_INDUSTRIES = new Set([
+  "IT服务", "白酒", "白色家电", "半导体", "包装印刷", "保险", "厨卫电器", "电池", "电机", "电力",
+  "电网设备", "电子化学品", "多元金融", "房地产", "纺织制造", "非金属材料", "风电设备", "服装家纺", "钢铁", "港口航运",
+  "工程机械", "工业金属", "公路铁路运输", "光伏设备", "光学光电子", "轨交设备", "贵金属", "黑色家电", "互联网电商", "化学纤维",
+  "化学原料", "化学制品", "化学制药", "环保设备", "环境治理", "机场航运", "计算机设备", "家居用品", "建筑材料", "建筑装饰",
+  "教育", "金属新材料", "军工电子", "军工装备", "零售", "旅游及酒店", "贸易", "煤炭开采加工", "美容护理", "能源金属",
+  "农产品加工", "农化制品", "其他电源设备", "其他电子", "其他社会服务", "汽车服务及其他", "汽车零部件", "汽车整车", "燃气", "软件开发",
+  "生物制品", "石油加工贸易", "食品加工制造", "塑料制品", "通信服务", "通信设备", "通用设备", "文化传媒", "物流", "橡胶制品",
+  "消费电子", "小家电", "小金属", "养殖业", "医疗服务", "医疗器械", "医药商业", "银行", "饮料制造", "影视院线",
+  "油气开采及服务", "游戏", "元件", "造纸", "证券", "中药", "种植业与林业", "专用设备", "自动化设备", "综合",
+]);
+
+const THS_CONCEPTS = new Set([
+  "2026一季报预增", "2026中报预增", "3D打印", "5G", "6G概念", "AI PC", "AI视频", "AI手机", "AI应用", "AI语料",
+  "AI智能体", "BC电池", "DeepSeek概念", "EDR概念", "ERP概念", "ETC", "F5G概念", "MCU芯片", "MiniLED", "NFT概念",
+  "OLED", "PCB概念", "PEEK材料", "PET铜箔", "PM2.5", "POE胶膜", "PPP概念", "ST板块", "TOPCON电池", "WiFi 6",
+  "阿尔茨海默概念", "阿里巴巴概念", "安防", "白酒概念", "百度概念", "比亚迪概念", "冰雪产业", "兵装重组概念", "丙烯酸", "玻璃基板",
+  "参股保险", "参股券商", "参股银行", "草甘膦", "超超临界发电", "超导概念", "超级电容", "超级品牌", "车联网(车路协同)", "成飞概念",
+  "充电桩", "宠物经济", "抽水蓄能", "储能", "传感器", "创投", "创新药", "存储芯片", "大豆", "大飞机",
+  "代糖概念", "地下管网", "低空经济", "第三代半导体", "电力物联网", "电子竞技", "电子身份证", "电子纸", "东数西算(算力)", "动力电池回收",
+  "动物疫苗", "抖音概念(字节概念)", "独角兽概念", "短剧游戏", "多模态AI", "俄乌冲突概念", "钒电池", "仿制药一致性评价", "飞行汽车(eVTOL)", "芬太尼",
+  "风电", "氟化工概念", "福建自贸区", "辅助生殖", "富士康概念", "钙钛矿电池", "肝炎概念", "高端装备", "高股息精选", "高铁",
+  "高压快充", "高压氧舱", "工业大麻", "工业互联网", "工业母机", "供销社", "共封装光学(CPO)", "共同富裕示范区", "共享单车", "股权转让(并购重组)",
+  "固废处理", "固态电池", "光伏概念", "光刻机", "光刻胶", "光热发电", "广东自贸区", "硅能源", "国产操作系统", "国产航母",
+  "国家大基金持股", "国企改革", "国资云", "海工装备", "海南自贸区", "海峡两岸", "航空发动机", "航运概念", "毫米波雷达", "合成生物",
+  "核电", "核污染防治", "黑龙江自贸区", "横琴新区", "鸿蒙概念", "猴痘概念", "互联网保险", "互联网金融", "沪股通", "华为概念",
+  "华为海思概念股", "华为鲲鹏", "华为欧拉", "华为汽车", "华为昇腾", "化肥", "化债概念(AMC概念)", "环氧丙烷", "换电概念", "黄金概念",
+  "机器人概念", "机器视觉", "基因测序", "家庭医生", "家用电器", "减肥药", "减速器", "建筑节能", "金属钴", "金属回收",
+  "金属镍", "金属铅", "金属铜", "金属锌", "京津冀一体化", "净水概念", "举牌", "军工", "军工信息化", "军民融合",
+  "科创次新股", "可降解塑料", "可控核聚变", "可燃冰", "空间计算", "空气能热泵", "跨境电商", "快手概念", "垃圾分类", "冷链物流",
+  "锂电池概念", "粮食概念", "两轮车", "量子科技", "磷化工", "流感", "露营经济", "旅游概念", "绿色电力", "蚂蚁集团概念",
+  "毛发医疗", "煤化工概念", "煤炭概念", "免税店", "民爆概念", "民营医院", "钠离子电池", "脑机接口", "宁德时代概念", "农村电商",
+  "农机", "农业种植", "培育钻石", "啤酒概念", "拼多多概念", "苹果概念", "期货概念", "汽车拆解概念", "汽车电子", "汽车热管理",
+  "汽车芯片", "禽流感", "青蒿素", "氢能源", "区块链", "燃料电池", "染料", "人工智能", "人脸识别", "人形机器人",
+  "人造肉", "融资融券", "柔性屏(折叠屏)", "柔性直流输电", "乳业", "赛马概念", "三胎概念", "商业航天", "上海国企改革", "上海自贸区",
+  "深股通", "深圳国企改革", "生态农业", "生物疫苗", "生物质能发电", "石墨电极", "石墨烯", "时空大数据", "食品安全", "手机游戏",
+  "数据安全", "数据确权", "数据要素", "数据中心(AIDC)", "数字货币", "数字经济", "数字孪生", "数字水印", "数字乡村", "水利",
+  "水泥概念", "算力租赁", "太赫兹", "钛白粉概念", "碳交易", "碳纤维", "碳中和", "特钢概念", "特高压", "特色小镇",
+  "特斯拉概念", "腾讯概念", "体育产业", "天津自贸区", "天然气", "同花顺出海50", "同花顺漂亮100", "同花顺中特估100", "铜缆高速连接", "统一大市场",
+  "土地流转", "土壤修复", "托育服务", "网红经济", "网络安全", "网络游戏", "网约车", "卫星导航", "文化传媒概念", "污水处理",
+  "无人机", "无人驾驶", "无人零售", "无线充电", "无线耳机", "物联网", "物业管理", "稀土永磁", "细胞免疫治疗", "先进封装",
+  "乡村振兴", "消毒剂", "消费电子概念", "小红书概念", "小金属概念", "小米概念", "小米汽车", "芯片概念", "新股与次新股", "新疆振兴",
+  "新能源汽车", "新型城镇化", "新型工业化", "新型烟草(电子烟)", "信创", "信托概念", "星闪概念", "雄安新区", "虚拟电厂", "虚拟数字人",
+  "虚拟现实", "血氧仪", "牙科医疗", "雅下水电概念", "烟草", "盐湖提锂", "眼科医疗", "央企国企改革", "养鸡", "养老概念",
+  "页岩气", "液冷服务器", "一带一路", "一体化压铸", "医疗器械概念", "医美概念", "医药电商", "移动支付", "英伟达概念", "幽门螺杆菌概念",
+  "有机硅概念", "语音技术", "玉米", "预制菜", "元宇宙", "粤港澳大湾区", "云办公", "云计算", "云游戏", "在线教育",
+  "摘帽", "长安汽车概念", "长三角一体化", "证金持股", "知识产权保护", "职业教育", "智慧城市", "智慧灯杆", "智慧政务", "智能穿戴",
+  "智能电网", "智能家居", "智能物流", "智能医疗", "智能音箱", "智能座舱", "中船系", "中俄贸易概念", "中国AI 50", "中韩自贸区",
+  "中芯国际概念", "中字头股票", "重组蛋白", "猪肉", "注册制次新股", "专精特新", "转基因", "装配式建筑", "自由贸易港", "租售同权",
+  "足球概念",
+]);
+
+// Eastmoney's concept universe also contains price-action screens such as
+// yesterday's limit-up list and recent highs. Those are useful scanners, but
+// they are not durable concept sectors and should not appear in Sector Radar.
+const NON_CONCEPT_PATTERNS = [
+  /昨日|涨停|跌停|连板|首板|一字板|打板/,
+  /历史新高|历史新低|近期新高|近期新低|百日新高|百日新低/,
+  /昨日表现|昨日触板|昨日炸板|昨日连板|昨日首板/,
+  /^(B股|A股|ST股|含B股|次新股|融资融券|转融券标的|沪股通|深股通|QFII重仓|机构重仓)$/,
+];
+
+async function thsIndustrySectors() {
+  const result = await resilientGbkText("https://q.10jqka.com.cn/thshy/", 30_000);
+  const rows = Array.from(result.value.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
+  const quoted = rows.map((row) => {
+    const code = row[1].match(/thshy\/detail\/code\/(\d+)/i)?.[1] ?? "";
+    const cells = htmlCells(row[1]);
+    return {
+      code: code ? `THS${code}` : "",
+      name: cells[1] ?? "",
+      change: numeric(cells[2]),
+      speed: null,
+      inflow: numeric(cells[5]) === null ? null : Number(cells[5]) * 1e8,
+    };
+  }).filter((item) => item.code && THS_INDUSTRIES.has(item.name));
+  const quotedByCode = new Map(quoted.map((item) => [item.code, item]));
+  const directorySeen = new Set<string>();
+  const items = Array.from(result.value.matchAll(/thshy\/detail\/code\/(\d+)\/?"[^>]*>([^<]+)<\/a>/gi))
+    .map((match) => ({ code: `THS${match[1]}`, name: htmlCellText(match[2]) }))
+    .filter((item) => {
+      if (!THS_INDUSTRIES.has(item.name) || directorySeen.has(item.code)) return false;
+      directorySeen.add(item.code);
+      return true;
+    })
+    .map((item) => quotedByCode.get(item.code) ?? { ...item, change: null, speed: null, inflow: null });
+  if (!items.length) throw new Error("同花顺行业分类解析失败");
+  return { items, result };
+}
+
+async function thsIndustryStocks(code: string) {
+  const thsCode = code.replace(/^THS/i, "");
+  const result = await resilientGbkText(`https://q.10jqka.com.cn/thshy/detail/code/${thsCode}/`, 16_000);
+  const rows = Array.from(result.value.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
+  const items = rows.map((row) => {
+    const cells = htmlCells(row[1]);
+    const stockCode = cells[1] ?? "";
+    return {
+      code: stockCode,
+      market: /^[69]/.test(stockCode) ? 1 : 0,
+      name: cells[2] ?? "",
+      price: numeric(cells[3]),
+      change: numeric(cells[4]),
+      speed: numeric(cells[6]),
+      inflow: null,
+    };
+  }).filter((item) => /^\d{6}$/.test(item.code) && item.name);
+  if (!items.length) throw new Error("同花顺行业成分股暂不可用");
+  return { items, meta: { ...metaFrom(result), source: "同花顺行情" } };
+}
+
 async function sectors(type: string) {
   const fs = sectorFilters[type] ?? sectorFilters.concept;
-  const url = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(fs)}&fields=f12,f14,f3,f22,f62`;
-  const result = await resilientJson(url, 20_000);
-  const items = (result.value?.data?.diff ?? []).map((item: Record<string, unknown>) => ({
+  const pageCount = 6;
+  const results: Array<Awaited<ReturnType<typeof resilientJson>>> = [];
+  let pageCursor = 1;
+  // Two workers avoid the upstream throttling seen when all six classification
+  // pages are requested at once, while still keeping the first load quick.
+  await Promise.all(Array.from({ length: 2 }, async () => {
+    while (pageCursor <= pageCount) {
+      const page = pageCursor;
+      pageCursor += 1;
+      const url = `${EASTMONEY}/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(fs)}&fields=f12,f14,f3,f22,f62`;
+      try {
+        results.push(await resilientJson(url, 20_000, { attempts: 2, timeoutMs: 4_000 }));
+      } catch { /* A partial classified list is preferable to a blank radar. */ }
+    }
+  }));
+  const raw = results.flatMap((result) => result.value?.data?.diff ?? []);
+  const seen = new Set<string>();
+  const eastmoneyItems = raw.map((item: Record<string, unknown>) => ({
     code: String(item.f12 ?? ""), name: String(item.f14 ?? ""), change: numeric(item.f3),
     speed: numeric(item.f22), inflow: numeric(item.f62),
-  })).filter((item: { code: string; name: string }) => item.code && item.name);
-  return { items, meta: metaFrom(result) };
+  })).filter((item: { code: string; name: string }) => {
+    if (!item.code || !item.name || seen.has(item.code)) return false;
+    seen.add(item.code);
+    if (type === "industry") return THS_INDUSTRIES.has(item.name) || !/[ⅠⅡⅢ]$/.test(item.name);
+    return THS_CONCEPTS.has(item.name) && !NON_CONCEPT_PATTERNS.some((pattern) => pattern.test(item.name));
+  }).sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+
+  if (type === "industry") {
+    try {
+      const ths = await thsIndustrySectors();
+      const eastmoneyByName = new Map(eastmoneyItems.map((item) => [item.name, item]));
+      const items = ths.items.map((item) => eastmoneyByName.get(item.name) ?? item)
+        .sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+      return {
+        items,
+        meta: {
+          ...metaFrom(...results, ths.result),
+          source: results.length ? "同花顺行业分类 · 东方财富行情" : "同花顺行业行情",
+        },
+      };
+    } catch {
+      if (!eastmoneyItems.length || !results.length) throw new Error("行业板块暂时无法连接");
+    }
+  }
+
+  if (!eastmoneyItems.length || !results.length) throw new Error("板块行情暂时无法连接");
+  return {
+    items: eastmoneyItems,
+    meta: {
+      ...metaFrom(...results),
+      source: type === "industry" ? "同花顺行业分类 · 东方财富行情" : "概念主题筛选 · 东方财富行情",
+    },
+  };
 }
 
 async function sectorStocks(code: string) {
+  if (/^THS\d+$/i.test(code)) return thsIndustryStocks(code);
   if (!/^BK\d+$/i.test(code)) throw new Error("板块代码格式不正确");
   const url = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${code}`)}&fields=f12,f13,f14,f2,f3,f22,f62`;
   const result = await resilientJson(url, 16_000);
