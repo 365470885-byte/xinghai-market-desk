@@ -30,24 +30,55 @@ type CapitalData = {
 };
 
 const DEFAULT_STOCKS: Stock[] = [
-  { code: "000001", market: 1, name: "上证指数" }, { code: "399001", market: 0, name: "深证成指" },
-  { code: "KS11", market: 100, name: "韩国KOSPI" }, { code: "601869", market: 1, name: "长飞光纤" },
-  { code: "603019", market: 1, name: "中科曙光" }, { code: "000938", market: 0, name: "紫光股份" },
-  { code: "001309", market: 0, name: "德明利" }, { code: "002384", market: 0, name: "东山精密" },
-  { code: "002156", market: 0, name: "通富微电" }, { code: "300394", market: 0, name: "天孚通信" },
-  { code: "300502", market: 0, name: "新易盛" }, { code: "600183", market: 1, name: "生益科技" },
-  { code: "000725", market: 0, name: "京东方A" }, { code: "300308", market: 0, name: "中际旭创" },
-  { code: "000988", market: 0, name: "华工科技" }, { code: "000977", market: 0, name: "浪潮信息" },
-  { code: "600206", market: 1, name: "有研新材" }, { code: "002916", market: 0, name: "深南电路" },
-  { code: "002409", market: 0, name: "雅克科技" }, { code: "002281", market: 0, name: "光迅科技" },
-  { code: "600584", market: 1, name: "长电科技" }, { code: "603986", market: 1, name: "兆易创新" },
-  { code: "600487", market: 1, name: "亨通光电" }, { code: "588060", market: 1, name: "科创50ETF" },
+  { code: "CNOW", market: 101, name: "富时A50期指" },
+  { code: "883421", market: 102, name: "同花顺全A(沪深京)" },
+  { code: "883418", market: 102, name: "微盘股" },
+  { code: "000001", market: 1, name: "上证指数" },
+  { code: "883958", market: 102, name: "昨日连板" },
+  { code: "399001", market: 0, name: "深证成指" },
+  { code: "KS11", market: 100, name: "韩国综合" },
+  { code: "002083", market: 0, name: "孚日股份" },
+  { code: "002879", market: 0, name: "长缆科技" },
+  { code: "688825", market: 1, name: "N长鑫" },
+  { code: "601606", market: 1, name: "长城军工" },
+  { code: "000533", market: 0, name: "顺钠股份" },
+  { code: "600378", market: 1, name: "昊华科技" },
+  { code: "600744", market: 1, name: "华银电力" },
+  { code: "603690", market: 1, name: "至纯科技" },
+  { code: "002208", market: 0, name: "合肥城建" },
+  { code: "002298", market: 0, name: "中电鑫龙" },
+  { code: "001258", market: 0, name: "立新能源" },
+  { code: "002498", market: 0, name: "汉缆股份" },
+  { code: "000595", market: 0, name: "新能股份" },
+  { code: "600396", market: 1, name: "华电辽能" },
+  { code: "603221", market: 1, name: "爱丽家居" },
+  { code: "000938", market: 0, name: "紫光股份" },
+  { code: "002837", market: 0, name: "英维克" },
+  { code: "000636", market: 0, name: "风华高科" },
+  { code: "002371", market: 0, name: "北方华创" },
+  { code: "600183", market: 1, name: "生益科技" },
+  { code: "001309", market: 0, name: "德明利" },
+  { code: "002384", market: 0, name: "东山精密" },
+  { code: "601869", market: 1, name: "长飞光纤" },
+  { code: "000725", market: 0, name: "京东方A" },
+  { code: "300308", market: 0, name: "中际旭创" },
+  { code: "002409", market: 0, name: "雅克科技" },
+  { code: "600664", market: 1, name: "哈药股份" },
+  { code: "002156", market: 0, name: "通富微电" },
+  { code: "600584", market: 1, name: "长电科技" },
+  { code: "603986", market: 1, name: "兆易创新" },
+  { code: "603137", market: 1, name: "恒尚节能" },
+  { code: "603580", market: 1, name: "艾艾精工" },
+  { code: "002265", market: 0, name: "建设工业" },
+  { code: "002428", market: 0, name: "云南锗业" },
 ];
-const DEFAULT_PINNED = ["1.000001", "0.399001", "100.KS11", "1.601869", "1.603019"];
-const WATCHLIST_KEY = "xinghai_watchlist_v1";
-const PINNED_KEY = "xinghai_pinned_v1";
+const DEFAULT_PINNED = ["101.CNOW", "102.883421", "102.883418", "1.000001", "102.883958", "0.399001", "100.KS11"];
+const WATCHLIST_KEY = "xinghai_watchlist_v2";
+const PINNED_KEY = "xinghai_pinned_v2";
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
+const marketLabel = (market: number) => market === 1 ? "SH" : market === 0 ? "SZ" : market === 100 ? "KR" : market === 101 ? "FT" : "THS";
+const marketDescription = (market: number) => market === 100 ? "韩国交易所" : market === 101 ? "富时中国A50期货" : market === 102 ? "同花顺特色指数" : "人民币普通股";
 const signed = (value: number | null | undefined, suffix = "%") => value === null || value === undefined || !Number.isFinite(value) ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}${suffix}`;
 const relativePercent = (value: number | null | undefined, base: number | null | undefined) =>
   value === null || value === undefined || base === null || base === undefined || !Number.isFinite(value) || !Number.isFinite(base) || base === 0
@@ -278,7 +309,7 @@ export function StockTerminal() {
   const [watchlist, setWatchlist] = useState<Stock[]>(DEFAULT_STOCKS);
   const [pinned, setPinned] = useState<Set<string>>(new Set(DEFAULT_PINNED));
   const [hydrated, setHydrated] = useState(false);
-  const [activeKey, setActiveKey] = useState(keyOf(DEFAULT_STOCKS[0]));
+  const [activeKey, setActiveKey] = useState("1.000001");
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [speeds4m, setSpeeds4m] = useState<Record<string, number>>({});
   const [marketTurnover, setMarketTurnover] = useState<MarketTurnover | null>(null);
@@ -306,7 +337,7 @@ export function StockTerminal() {
       const storedPinned = JSON.parse(localStorage.getItem(PINNED_KEY) || "null");
       if (Array.isArray(storedStocks) && storedStocks.length) {
         setWatchlist(storedStocks);
-        setActiveKey(keyOf(storedStocks[0]));
+        setActiveKey(storedStocks.some((stock) => keyOf(stock) === "1.000001") ? "1.000001" : keyOf(storedStocks[0]));
       }
       if (Array.isArray(storedPinned)) setPinned(new Set(storedPinned));
     } catch { /* Ignore invalid browser storage. */ }
@@ -594,7 +625,7 @@ export function StockTerminal() {
               return <div key={key} draggable onDragStart={() => { dragged.current = key; }} onDragOver={(event) => event.preventDefault()} onDrop={() => dropOn(key)}
                 className={`watch-row ${activeKey === key ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
                 <button type="button" className="watch-select" aria-pressed={activeKey === key} onClick={() => setActiveKey(key)}>
-                  <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small>{stock.code}<em>{stock.market === 1 ? "SH" : stock.market === 0 ? "SZ" : "KR"}</em></small></span>
+                  <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small>{stock.code}<em>{marketLabel(stock.market)}</em></small></span>
                   <span className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></span>
                   <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
                 </button>
@@ -609,7 +640,7 @@ export function StockTerminal() {
         <main className="research-main">
           <section className="quote-hero panel">
             {activeQuote ? <>
-              <div className="quote-heading"><div className="quote-symbol"><span>{activeQuote.market === 1 ? "SH" : activeQuote.market === 0 ? "SZ" : "KR"}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {activeQuote.market === 100 ? "韩国交易所" : "人民币普通股"}</p></div></div><div className="quote-updated"><i className={connection === "online" ? "live" : ""} />行情时间 {shortTime(detail?.meta.updatedAt || meta?.updatedAt)}</div></div>
+              <div className="quote-heading"><div className="quote-symbol"><span>{marketLabel(activeQuote.market)}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><div className="quote-updated"><i className={connection === "online" ? "live" : ""} />行情时间 {shortTime(detail?.meta.updatedAt || meta?.updatedAt)}</div></div>
               <div className="price-cluster"><strong className={tone(activeQuote.changePercent)}>{number(activeQuote.price)}</strong><div className={tone(activeQuote.changePercent)}><span>{signed(activeQuote.changePercent)}</span><small>较前收 {number(activeQuote.prevClose)}</small></div></div>
               <div className="metric-grid">
                 {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}

@@ -117,6 +117,46 @@ async function resilientText(url: string, ttlMs = 8_000, options: RequestOptions
   throw lastError instanceof Error ? lastError : new Error("备用行情暂不可用");
 }
 
+async function resilientThsText(url: string, ttlMs = 8_000, options: RequestOptions = {}) {
+  const cacheKey = `ths:${url}`;
+  const now = Date.now();
+  const cached = responseCache.get(cacheKey);
+  if (cached && cached.freshUntil > now && typeof cached.value === "string") {
+    return { value: cached.value, fetchedAt: cached.fetchedAt, mode: "cache" as CacheMode };
+  }
+  let lastError: unknown;
+  const attempts = options.attempts ?? 2;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 4_000);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        cache: "no-store",
+        headers: {
+          Accept: "*/*",
+          Referer: "https://q.10jqka.com.cn/",
+          "User-Agent": "Mozilla/5.0 (compatible; XinghaiMarketDesk/1.0)",
+        },
+      });
+      if (!response.ok) throw new Error(`同花顺行情返回 ${response.status}`);
+      const value = await response.text();
+      if (!value) throw new Error("同花顺行情为空");
+      const fetchedAt = Date.now();
+      responseCache.set(cacheKey, { value, fetchedAt, freshUntil: fetchedAt + ttlMs, staleUntil: fetchedAt + Math.max(180_000, ttlMs * 20) });
+      return { value, fetchedAt, mode: "live" as CacheMode };
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) await sleep(260 * (attempt + 1));
+    } finally { clearTimeout(timer); }
+  }
+  const fallback = responseCache.get(cacheKey);
+  if (fallback && fallback.staleUntil > Date.now() && typeof fallback.value === "string") {
+    return { value: fallback.value, fetchedAt: fallback.fetchedAt, mode: "stale" as CacheMode };
+  }
+  throw lastError instanceof Error ? lastError : new Error("同花顺行情暂不可用");
+}
+
 async function resilientGbkText(url: string, ttlMs = 30_000, options: RequestOptions = {}) {
   const cacheKey = `gbk:${url}`;
   const now = Date.now();
@@ -236,14 +276,41 @@ function parseSinaQuotes(text: string, requested: string[]) {
     if (market === "1" && /^\d{6}$/.test(code)) requestedBySymbol.set(`sh${code}`, secid);
     if (market === "0" && /^\d{6}$/.test(code)) requestedBySymbol.set(`sz${code}`, secid);
     if (market === "100" && code === "KS11") requestedBySymbol.set("b_KOSPI", secid);
+    if (market === "101" && code === "CNOW") requestedBySymbol.set("hf_CHA50CFD", secid);
   });
   const items: ReturnType<typeof parseQuote>[] = [];
-  const pattern = /var\s+hq_str_(sh\d{6}|sz\d{6}|b_KOSPI)="([^"]*)";/g;
+  const pattern = /var\s+hq_str_(sh\d{6}|sz\d{6}|b_KOSPI|hf_CHA50CFD)="([^"]*)";/g;
   for (const match of text.matchAll(pattern)) {
     const secid = requestedBySymbol.get(match[1]);
     if (!secid) continue;
     const [marketText, code] = secid.split(".");
     const parts = match[2].split(",");
+    if (match[1] === "hf_CHA50CFD") {
+      const price = numeric(parts[0]);
+      const prevClose = numeric(parts[7]);
+      items.push({
+        code,
+        market: Number(marketText),
+        name: "富时A50期指",
+        price,
+        changePercent: price !== null && prevClose && prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null,
+        speed: null,
+        high: numeric(parts[4]),
+        low: numeric(parts[5]),
+        open: numeric(parts[8]),
+        prevClose,
+        volume: numeric(parts[9]),
+        amount: null,
+        turnover: null,
+        amplitude: prevClose && prevClose > 0 && numeric(parts[4]) !== null && numeric(parts[5]) !== null
+          ? (((numeric(parts[4]) as number) - (numeric(parts[5]) as number)) / prevClose) * 100
+          : null,
+        netInflow: null,
+        limitUp: null,
+        limitDown: null,
+      });
+      continue;
+    }
     if (match[1] === "b_KOSPI") {
       items.push({
         code,
@@ -296,6 +363,58 @@ function parseSinaQuotes(text: string, requested: string[]) {
   return items;
 }
 
+function parseThsJsonp(text: string) {
+  const start = text.indexOf("(");
+  const end = text.lastIndexOf(")");
+  if (start < 0 || end <= start) throw new Error("同花顺行情格式异常");
+  return JSON.parse(text.slice(start + 1, end));
+}
+
+function parseThsIndexQuote(text: string, secid: string) {
+  const payload = parseThsJsonp(text);
+  const row = payload?.items ?? {};
+  const [marketText, code] = secid.split(".");
+  const price = numeric(row["10"]);
+  const prevClose = numeric(row["6"]);
+  const high = numeric(row["8"]);
+  const low = numeric(row["9"]);
+  return {
+    code,
+    market: Number(marketText),
+    name: String(payload?.name ?? ""),
+    price,
+    changePercent: price !== null && prevClose && prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null,
+    speed: null,
+    high,
+    low,
+    open: numeric(row["7"]),
+    prevClose,
+    volume: numeric(row["13"]),
+    amount: numeric(row["19"]),
+    turnover: null,
+    amplitude: prevClose && prevClose > 0 && high !== null && low !== null ? ((high - low) / prevClose) * 100 : null,
+    netInflow: null,
+    limitUp: null,
+    limitDown: null,
+  };
+}
+
+function parseThsIndexTrends(text: string) {
+  const payload = parseThsJsonp(text);
+  const data = Object.values(payload ?? {})[0] as { date?: string; data?: string } | undefined;
+  const date = String(data?.date ?? "");
+  return String(data?.data ?? "").split(";").map((row) => {
+    const parts = row.split(",");
+    return {
+      time: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)} ${parts[0]?.slice(0, 2)}:${parts[0]?.slice(2, 4)}`,
+      price: numeric(parts[1]),
+      average: null,
+      volume: numeric(parts[4]),
+      amount: numeric(parts[2]),
+    };
+  }).filter((item) => item.price !== null);
+}
+
 async function quotes(secids: string[]) {
   if (!secids.length) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "新浪行情" } };
   type QuoteBatch = {
@@ -307,10 +426,29 @@ async function quotes(secids: string[]) {
   const sinaPromise: Promise<QuoteBatch> = (async () => {
     const symbols = secids.map((secid) => {
       const [market, code] = secid.split(".");
-      return market === "1" ? `sh${code}` : market === "0" ? `sz${code}` : secid === "100.KS11" ? "b_KOSPI" : "";
+      return market === "1" ? `sh${code}` : market === "0" ? `sz${code}` : secid === "100.KS11" ? "b_KOSPI" : secid === "101.CNOW" ? "hf_CHA50CFD" : "";
     }).filter(Boolean);
-    const result = await resilientText(`https://hq.sinajs.cn/list=${symbols.join(",")}`, 2_000, { attempts: 1, timeoutMs: 2_400 });
-    return { items: parseSinaQuotes(result.value, secids), results: [result], source: "新浪行情" };
+    const sinaResult = symbols.length
+      ? await resilientText(`https://hq.sinajs.cn/list=${symbols.join(",")}`, 2_000, { attempts: 1, timeoutMs: 2_400 })
+      : null;
+    const thsSecids = secids.filter((secid) => /^102\.\d{6}$/.test(secid));
+    const thsSettled = await Promise.allSettled(thsSecids.map((secid) => {
+      const code = secid.split(".")[1];
+      return resilientThsText(`https://d.10jqka.com.cn/v2/realhead/48_${code}/last.js`, 2_000, { attempts: 1, timeoutMs: 2_400 });
+    }));
+    const thsResults = thsSettled
+      .map((result, index) => result.status === "fulfilled" ? { result: result.value, secid: thsSecids[index] } : null)
+      .filter((item): item is { result: Awaited<ReturnType<typeof resilientThsText>>; secid: string } => Boolean(item));
+    const results = [...(sinaResult ? [sinaResult] : []), ...thsResults.map((item) => item.result)];
+    if (!results.length) throw new Error("新浪与同花顺行情暂不可用");
+    return {
+      items: [
+        ...(sinaResult ? parseSinaQuotes(sinaResult.value, secids) : []),
+        ...thsResults.map((item) => parseThsIndexQuote(item.result.value, item.secid)),
+      ],
+      results,
+      source: thsSecids.length ? "新浪行情 + 同花顺" : "新浪行情",
+    };
   })();
 
   const eastmoneyPromise: Promise<QuoteBatch> = (async () => {
@@ -369,6 +507,31 @@ async function quotes(secids: string[]) {
 
 async function detail(secid: string) {
   if (!/^\d{1,3}\.[A-Z0-9]{4,8}$/i.test(secid)) throw new Error("证券代码格式不正确");
+  const [specialMarketText, specialCode] = secid.split(".");
+  const specialMarket = Number(specialMarketText);
+  if (specialMarket === 101 || specialMarket === 102) {
+    const quoteData = await quotes([secid]);
+    const quote = quoteData.items[0];
+    if (!quote) throw new Error("指数行情暂时无法连接");
+    let trends: Array<{ time: string; price: number | null; average: number | null; volume: number | null; amount: number | null }> = [];
+    let trendMeta: { fetchedAt: number; mode: CacheMode } | null = null;
+    if (specialMarket === 102) {
+      try {
+        const result = await resilientThsText(`https://d.10jqka.com.cn/v6/time/48_${specialCode}/last.js`, 2_000, { attempts: 2, timeoutMs: 3_200 });
+        trends = parseThsIndexTrends(result.value);
+        trendMeta = result;
+      } catch { /* The live quote remains useful if minute history is temporarily unavailable. */ }
+    }
+    return {
+      quote,
+      trends,
+      klines: [],
+      preClose: quote.prevClose,
+      meta: trendMeta
+        ? { ...metaFrom(trendMeta), source: specialMarket === 102 ? "同花顺" : quoteData.meta.source }
+        : quoteData.meta,
+    };
+  }
   const quoteFields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
   const quoteUrl = `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=${quoteFields}&secids=${encodeURIComponent(secid)}`;
   const trendsUrl = `${EASTMONEY_HISTORY}/stock/trends2/get?secid=${encodeURIComponent(secid)}&ndays=1&iscr=0&iscca=0&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11&fields2=f51,f52,f53,f54,f55,f56,f57,f58`;
