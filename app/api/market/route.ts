@@ -381,7 +381,7 @@ function parseThsIndexQuote(text: string, secid: string) {
   return {
     code,
     market: Number(marketText),
-    name: String(payload?.name ?? ""),
+    name: String(row.name ?? ""),
     price,
     changePercent: price !== null && prevClose && prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null,
     speed: null,
@@ -434,7 +434,7 @@ async function quotes(secids: string[]) {
     const thsSecids = secids.filter((secid) => /^102\.\d{6}$/.test(secid));
     const thsSettled = await Promise.allSettled(thsSecids.map((secid) => {
       const code = secid.split(".")[1];
-      return resilientThsText(`https://d.10jqka.com.cn/v2/realhead/48_${code}/last.js`, 2_000, { attempts: 1, timeoutMs: 2_400 });
+      return resilientThsText(`https://d.10jqka.com.cn/v2/realhead/48_${code}/last.js`, 2_000, { attempts: 2, timeoutMs: 3_200 });
     }));
     const thsResults = thsSettled
       .map((result, index) => result.status === "fulfilled" ? { result: result.value, secid: thsSecids[index] } : null)
