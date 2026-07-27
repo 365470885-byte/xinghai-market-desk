@@ -261,6 +261,8 @@ function parseQuote(item: Record<string, unknown>) {
     netInflow: numeric(item.f62),
     limitUp: numeric(item.f51),
     limitDown: numeric(item.f52),
+    limitState: null as "up" | "down" | null,
+    sealedAmount: null as number | null,
   };
 }
 
@@ -308,6 +310,8 @@ function parseSinaQuotes(text: string, requested: string[]) {
         netInflow: null,
         limitUp: null,
         limitDown: null,
+        limitState: null,
+        sealedAmount: null,
       });
       continue;
     }
@@ -330,6 +334,8 @@ function parseSinaQuotes(text: string, requested: string[]) {
         netInflow: null,
         limitUp: null,
         limitDown: null,
+        limitState: null,
+        sealedAmount: null,
       });
       continue;
     }
@@ -338,6 +344,21 @@ function parseSinaQuotes(text: string, requested: string[]) {
     const current = numeric(parts[3]);
     const price = current && current > 0 ? current : prevClose;
     const changePercent = price !== null && prevClose && prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null;
+    const bidOneVolume = numeric(parts[10]);
+    const bidOnePrice = numeric(parts[11]);
+    const askOneVolume = numeric(parts[20]);
+    const askOnePrice = numeric(parts[21]);
+    const samePrice = (left: number | null, right: number | null) => left !== null && right !== null && Math.abs(left - right) < 0.001;
+    const limitState: "up" | "down" | null = price !== null && prevClose !== null && price > prevClose && samePrice(bidOnePrice, price) && (!askOnePrice || askOnePrice <= 0)
+      ? "up"
+      : price !== null && prevClose !== null && price < prevClose && samePrice(askOnePrice, price) && (!bidOnePrice || bidOnePrice <= 0)
+        ? "down"
+        : null;
+    const sealedAmount = limitState === "up" && bidOneVolume !== null && price !== null
+      ? bidOneVolume * price
+      : limitState === "down" && askOneVolume !== null && price !== null
+        ? askOneVolume * price
+        : null;
     items.push({
       code,
       market: Number(marketText),
@@ -358,6 +379,8 @@ function parseSinaQuotes(text: string, requested: string[]) {
       netInflow: null,
       limitUp: null,
       limitDown: null,
+      limitState,
+      sealedAmount,
     });
   }
   return items;
@@ -396,6 +419,8 @@ function parseThsIndexQuote(text: string, secid: string) {
     netInflow: null,
     limitUp: null,
     limitDown: null,
+    limitState: null,
+    sealedAmount: null,
   };
 }
 
@@ -485,7 +510,16 @@ async function quotes(secids: string[]) {
     const sources: string[] = [];
     partials.forEach((partial) => {
       if (partial.status !== "fulfilled") return;
-      partial.value.items.forEach((item) => quoteMap.set(`${item.market}.${item.code}`, item));
+      partial.value.items.forEach((item) => {
+        const key = `${item.market}.${item.code}`;
+        const previous = quoteMap.get(key);
+        quoteMap.set(key, {
+          ...previous,
+          ...item,
+          limitState: item.limitState ?? previous?.limitState ?? null,
+          sealedAmount: item.sealedAmount ?? previous?.sealedAmount ?? null,
+        });
+      });
       results.push(...partial.value.results);
       sources.push(partial.value.source);
     });

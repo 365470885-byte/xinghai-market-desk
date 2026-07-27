@@ -54,9 +54,13 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /aria-live="polite"/);
   assert.match(terminal, /autoComplete="off"/);
   assert.match(terminal, /role="img"/);
+  assert.match(terminal, /涨停" : "跌停"}封单/);
   assert.match(css, /--font-data:/);
+  assert.match(css, /\.limit-badge\.up/);
+  assert.match(css, /\.limit-badge\.down/);
   assert.match(css, /font-variant-numeric:\s*tabular-nums/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
+  assert.doesNotMatch(`${terminal}\n${css}`, /#(?:d74652|f05f68|ff0000|ff4d4f|e53935|dc2626)|\bred\b/i);
   assert.doesNotMatch(css, /transition:\s*all/i);
   assert.doesNotMatch(css, /outline:\s*none/i);
 });

@@ -13,7 +13,7 @@
   --blue: #0b6fae;
   --blue-soft: #eaf5fb;
   --gold: #9a6b25;
-  --up: #d74652;
+  --up: #9a5f00;
   --down: #087f60;
   --shadow: 0 8px 24px rgba(24, 49, 73, .055);
   --font-ui: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
@@ -172,6 +172,9 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outli
 .stock-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; }
 .stock-identity small { display: flex; align-items: center; gap: 7px; margin: 6px 0 0 14px; color: #7f8d9c; font: 500 11px/1.2 var(--font-ui); }
 .stock-identity small em { padding: 1px 4px; border: 1px solid var(--line-strong); border-radius: 2px; font-style: normal; font-size: 10px; font-weight: 600; }
+.limit-badge { max-width: 100%; padding: 2px 5px; overflow: hidden; border: 1px solid; border-radius: 3px; font: 650 9px/1 var(--font-ui); white-space: nowrap; text-overflow: ellipsis; }
+.limit-badge.up { color: #805000 !important; border-color: #d3ad67; background: #fff3dc; }
+.limit-badge.down { color: #056b53 !important; border-color: #78b6a6; background: #e9f7f2; }
 .stock-quote { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
 .stock-quote strong { font: 600 12px/1 var(--font-ui); }
 .stock-quote span { font: 550 11px/1 var(--font-ui); }

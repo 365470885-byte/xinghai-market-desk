@@ -10,6 +10,7 @@ type Quote = Stock & {
   price: number | null; changePercent: number | null; speed: number | null; high?: number | null;
   low?: number | null; open?: number | null; prevClose?: number | null; volume?: number | null;
   amount?: number | null; turnover?: number | null; amplitude?: number | null; netInflow?: number | null;
+  limitState?: "up" | "down" | null; sealedAmount?: number | null;
 };
 type Trend = { time: string; price: number | null; average: number | null; volume: number | null; amount: number | null };
 type Kline = { date: string; open: number | null; close: number | null; high: number | null; low: number | null; volume: number | null; amount: number | null; changePercent: number | null };
@@ -234,7 +235,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       rows.forEach((row, index) => {
         const x = pad.l + xStep * index + xStep / 2;
         const up = (row.close as number) >= (row.open as number);
-        const color = up ? "#f05f68" : "#32b68a";
+        const color = up ? "#bd7815" : "#16806b";
         ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(x, y(row.high as number)); ctx.lineTo(x, y(row.low as number)); ctx.stroke();
         const bodyY = Math.min(y(row.open as number), y(row.close as number));
@@ -258,7 +259,7 @@ function Sparkline({ values, value }: { values: number[]; value: number | null |
   const ref = useCanvas((ctx, width, height) => {
     if (values.length < 2) return;
     const min = Math.min(...values), max = Math.max(...values), span = Math.max(max - min, 0.01);
-    const color = (value || 0) >= 0 ? "#f05f68" : "#32b68a";
+    const color = (value || 0) >= 0 ? "#bd7815" : "#16806b";
     ctx.beginPath();
     values.forEach((item, index) => {
       const x = (index / (values.length - 1)) * width;
@@ -281,7 +282,7 @@ function FlowChart({ rows }: { rows: CapitalData["flow"] }) {
     const x = (index: number) => pad.l + (index / Math.max(values.length - 1, 1)) * (width - pad.l - pad.r);
     const y = (value: number) => pad.t + ((maxAbs - value) / (maxAbs * 2)) * (height - pad.t - pad.b);
     const last = values.at(-1) || 0;
-    const color = last >= 0 ? "#f05f68" : "#32b68a";
+    const color = last >= 0 ? "#bd7815" : "#16806b";
     const gradient = ctx.createLinearGradient(0, pad.t, 0, height - pad.b);
     gradient.addColorStop(0, `${color}44`); gradient.addColorStop(1, `${color}00`);
     ctx.beginPath(); values.forEach((value, index) => index ? ctx.lineTo(x(index), y(value)) : ctx.moveTo(x(index), y(value)));
@@ -625,7 +626,7 @@ export function StockTerminal() {
               return <div key={key} draggable onDragStart={() => { dragged.current = key; }} onDragOver={(event) => event.preventDefault()} onDrop={() => dropOn(key)}
                 className={`watch-row ${activeKey === key ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
                 <button type="button" className="watch-select" aria-pressed={activeKey === key} onClick={() => setActiveKey(key)}>
-                  <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small>{stock.code}<em>{marketLabel(stock.market)}</em></small></span>
+                  <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small><span>{stock.code}</span><em>{marketLabel(stock.market)}</em>{quote?.limitState && quote.sealedAmount ? <b className={`limit-badge ${quote.limitState}`}>{quote.limitState === "up" ? "涨停" : "跌停"}封单 {amount(quote.sealedAmount)}</b> : null}</small></span>
                   <span className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></span>
                   <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
                 </button>
