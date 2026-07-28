@@ -1,10 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type PageKey = "watch" | "sector" | "capital";
 type ChartMode = "time" | "day";
 type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: number; source: string };
+type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital";
+type FeedSnapshot = MarketMeta & { label: string };
+type WatchSort = "manual" | "change" | "speed" | "amount";
 type Stock = { code: string; market: number; name: string };
 type Quote = Stock & {
   price: number | null; changePercent: number | null; speed: number | null; high?: number | null;
@@ -76,6 +79,10 @@ const DEFAULT_STOCKS: Stock[] = [
 const DEFAULT_PINNED = ["101.CNOW", "102.883421", "102.883418", "1.000001", "102.883958", "0.399001", "100.KS11"];
 const WATCHLIST_KEY = "xinghai_watchlist_v2";
 const PINNED_KEY = "xinghai_pinned_v2";
+const FEED_LABELS: Record<FeedKey, string> = {
+  quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
+  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向",
+};
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
 const marketLabel = (market: number) => market === 1 ? "SH" : market === 0 ? "SZ" : market === 100 ? "KR" : market === 101 ? "FT" : "THS";
@@ -102,6 +109,36 @@ const marketAmount = (value: number | null | undefined) => {
   return amount(value);
 };
 const shortTime = (stamp?: number) => stamp ? new Date(stamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "—";
+const feedModeLabel = (mode?: MarketMeta["mode"]) => mode === "live" ? "实时" : mode === "cache" ? "有效缓存" : mode === "stale" ? "过期缓存" : mode === "offline" ? "不可用" : "等待";
+const feedAge = (updatedAt?: number, now = Date.now()) => {
+  if (!updatedAt) return "无有效行情时间";
+  const seconds = Math.max(0, Math.floor((now - updatedAt) / 1_000));
+  if (seconds < 60) return `延迟约 ${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `数据年龄 ${minutes} 分钟` : `数据年龄 ${Math.floor(minutes / 60)} 小时`;
+};
+const isTextEntry = (target: EventTarget | null) => target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target instanceof HTMLButtonElement || target instanceof HTMLAnchorElement || (target instanceof HTMLElement && target.isContentEditable);
+const isAShareTrading = (date = new Date()) => {
+  const day = date.getDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  return (minutes >= 9 * 60 + 15 && minutes <= 11 * 60 + 32) || (minutes >= 12 * 60 + 58 && minutes <= 15 * 60 + 2);
+};
+
+function DataStamp({ meta, label, compact = false }: { meta: MarketMeta | null | undefined; label: string; compact?: boolean }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <div className={`data-stamp ${meta?.mode || "offline"} ${compact ? "compact" : ""}`} title={`${label}｜${meta?.source || "尚未连接"}｜${feedAge(meta?.updatedAt, now)}`}>
+    <i aria-hidden="true" />
+    <span>{label}</span>
+    <b>{meta?.source || "尚未连接"}</b>
+    <time>{shortTime(meta?.updatedAt)}</time>
+    <em>{meta ? `${feedModeLabel(meta.mode)} · ${feedAge(meta.updatedAt, now)}` : "等待数据"}</em>
+  </div>;
+}
 
 async function fetchJson<T>(url: string, timeout = 12_000): Promise<T> {
   const controller = new AbortController();
@@ -133,9 +170,17 @@ function useCanvas(draw: (ctx: CanvasRenderingContext2D, width: number, height: 
       draw(ctx, rect.width, rect.height);
     };
     render();
-    const observer = new ResizeObserver(render);
-    observer.observe(canvas);
-    return () => observer.disconnect();
+    let frame = 0;
+    const requestRender = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(render);
+    };
+    const observer = new ResizeObserver(requestRender);
+    observer.observe(canvas.parentElement || canvas);
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
     // draw is intentionally refreshed by the supplied dependency list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, dependencies);
@@ -169,7 +214,10 @@ function aShareSessionProgress(time: string, fallbackIndex: number) {
   return Math.min(Math.max(tradingMinute, 0), 240) / 240;
 }
 
+type ChartHover = { x: number; y: number; label: string; price: number | null; average?: number | null; volume?: number | null; amount?: number | null };
+
 function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode }) {
+  const [hover, setHover] = useState<ChartHover | null>(null);
   const ref = useCanvas((ctx, width, height) => {
     const pad = { l: 48, r: 18, t: 24, b: 36 };
     grid(ctx, width, height, pad);
@@ -194,6 +242,19 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       const y = (value: number) => pad.t + ((max - value) / (max - min)) * plotH;
       const lastRow = rows.at(-1) as Trend;
       const lastX = x(lastRow, rows.length - 1);
+
+      const maxVolume = Math.max(...rows.map((row) => row.volume || 0), 1);
+      ctx.fillStyle = "rgba(33, 118, 169, .13)";
+      rows.forEach((row, index) => {
+        const volumeH = ((row.volume || 0) / maxVolume) * plotH * .17;
+        ctx.fillRect(x(row, index) - 1.2, height - pad.b - volumeH, 2.4, volumeH);
+      });
+
+      ctx.save();
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = "rgba(154, 107, 37, .55)";
+      ctx.beginPath(); ctx.moveTo(pad.l, y(base)); ctx.lineTo(width - pad.r, y(base)); ctx.stroke();
+      ctx.restore();
 
       const gradient = ctx.createLinearGradient(0, pad.t, 0, height - pad.b);
       gradient.addColorStop(0, "rgba(77,181,255,.24)");
@@ -221,6 +282,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       ctx.fillText(max.toFixed(2), pad.l - 8, pad.t + 4);
       ctx.fillText(base.toFixed(2), pad.l - 8, y(base) + 4);
       ctx.fillText(min.toFixed(2), pad.l - 8, height - pad.b);
+      ctx.textAlign = "left"; ctx.fillStyle = "#9a6b25"; ctx.fillText("昨收", pad.l + 5, y(base) - 6);
       ctx.textAlign = "center";
       ["09:30", "10:30", "11:30 / 13:00", "14:00", "15:00"].forEach((label, i) => ctx.fillText(label, pad.l + (plotW * i) / 4, height - 12));
     } else {
@@ -252,7 +314,47 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       });
     }
   }, [detail, mode]);
-  return <canvas className="market-canvas" ref={ref} role="img" aria-label={mode === "time" ? "分时走势" : "日K走势"} />;
+
+  const inspectPoint = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const plotWidth = Math.max(1, rect.width - 66);
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - 48) / plotWidth));
+    const y = Math.min(rect.height - 36, Math.max(24, event.clientY - rect.top));
+    if (mode === "time") {
+      const rows = (detail?.trends || []).filter((row) => row.price !== null);
+      if (!rows.length) return;
+      let nearestIndex = 0;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      rows.forEach((row, index) => {
+        const distance = Math.abs(aShareSessionProgress(row.time, index) - ratio);
+        if (distance < nearestDistance) { nearestIndex = index; nearestDistance = distance; }
+      });
+      const row = rows[nearestIndex];
+      const x = 48 + aShareSessionProgress(row.time, nearestIndex) * plotWidth;
+      setHover({ x, y, label: row.time.split(" ").at(-1) || row.time, price: row.price, average: row.average, volume: row.volume, amount: row.amount });
+      return;
+    }
+    const rows = (detail?.klines || []).filter((row) => row.close !== null);
+    if (!rows.length) return;
+    const index = Math.min(rows.length - 1, Math.max(0, Math.round(ratio * (rows.length - 1))));
+    const row = rows[index];
+    setHover({ x: 48 + ((index + .5) / rows.length) * plotWidth, y, label: row.date, price: row.close, volume: row.volume, amount: row.amount });
+  };
+
+  return <div className="market-chart-wrap" onPointerMove={inspectPoint} onPointerLeave={() => setHover(null)}>
+    <canvas className="market-canvas" ref={ref} role="img" aria-label={mode === "time" ? "可悬停查看时间、价格、均价和成交量的分时走势" : "可悬停查看日期、收盘价和成交量的日K走势"} />
+    {hover && <>
+      <span className="crosshair vertical" style={{ left: hover.x }} aria-hidden="true" />
+      <span className="crosshair horizontal" style={{ top: hover.y }} aria-hidden="true" />
+      <div className="chart-tooltip" style={{ left: hover.x, top: hover.y }}>
+        <strong>{hover.label}</strong><span>价格 {number(hover.price)}</span>
+        {hover.average !== undefined && <span>均价 {number(hover.average)}</span>}
+        <span>成交量 {amount(hover.volume)}</span>
+        {hover.amount !== undefined && <span>成交额 {amount(hover.amount)}</span>}
+      </div>
+    </>}
+    {mode === "time" && <span className="volume-caption">成交量</span>}
+  </div>;
 }
 
 function Sparkline({ values, value }: { values: number[]; value: number | null | undefined }) {
@@ -316,12 +418,16 @@ export function StockTerminal() {
   const [marketTurnover, setMarketTurnover] = useState<MarketTurnover | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [chartMode, setChartMode] = useState<ChartMode>("time");
-  const [meta, setMeta] = useState<MarketMeta | null>(null);
-  const [connection, setConnection] = useState<"loading" | "online" | "stale" | "offline">("loading");
+  const [feedStates, setFeedStates] = useState<Partial<Record<FeedKey, FeedSnapshot>>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [pollingPaused, setPollingPaused] = useState(false);
+  const [compactList, setCompactList] = useState(true);
+  const [watchSort, setWatchSort] = useState<WatchSort>("manual");
+  const [railOpen, setRailOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Stock[]>([]);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [searching, setSearching] = useState(false);
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const dragged = useRef<string | null>(null);
@@ -331,6 +437,11 @@ export function StockTerminal() {
   const detailBusy = useRef<string | null>(null);
   const speedBusy = useRef(false);
   const turnoverBusy = useRef(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const detailRef = useRef<Detail | null>(null);
+  const quotesRef = useRef<Record<string, Quote>>({});
+  const speedsRef = useRef<Record<string, number>>({});
+  const turnoverRef = useRef<MarketTurnover | null>(null);
 
   useEffect(() => {
     try {
@@ -351,27 +462,73 @@ export function StockTerminal() {
     localStorage.setItem(PINNED_KEY, JSON.stringify(Array.from(pinned)));
   }, [hydrated, pinned, watchlist]);
 
-  const displayedStocks = useMemo(() => [
-    ...watchlist.filter((stock) => pinned.has(keyOf(stock))),
-    ...watchlist.filter((stock) => !pinned.has(keyOf(stock))),
-  ], [pinned, watchlist]);
+  const displayedStocks = useMemo(() => {
+    const order = (rows: Stock[]) => watchSort === "manual" ? rows : [...rows].sort((a, b) => {
+      const aKey = keyOf(a), bKey = keyOf(b);
+      const value = (key: string) => watchSort === "change" ? quotes[key]?.changePercent : watchSort === "speed" ? speeds4m[key] : quotes[key]?.amount;
+      return (value(bKey) ?? Number.NEGATIVE_INFINITY) - (value(aKey) ?? Number.NEGATIVE_INFINITY);
+    });
+    return [
+      ...order(watchlist.filter((stock) => pinned.has(keyOf(stock)))),
+      ...order(watchlist.filter((stock) => !pinned.has(keyOf(stock)))),
+    ];
+  }, [pinned, quotes, speeds4m, watchSort, watchlist]);
 
   const activeStock = watchlist.find((stock) => keyOf(stock) === activeKey) || watchlist[0] || null;
   const activeQuote = detail?.quote || (activeStock ? quotes[keyOf(activeStock)] : null);
 
-  const updateConnection = useCallback((nextMeta: MarketMeta) => {
-    setMeta(nextMeta);
-    setConnection(nextMeta.mode === "stale" ? "stale" : "online");
+  const updateConnection = useCallback((nextMeta: MarketMeta, feed: FeedKey = "quotes") => {
+    setFeedStates((current) => ({ ...current, [feed]: { ...nextMeta, label: FEED_LABELS[feed] } }));
   }, []);
 
-  const refreshQuotes = useCallback(async (silent = false) => {
+  const markFeedFailure = useCallback((feed: FeedKey, hasData: boolean) => {
+    setFeedStates((current) => {
+      const previous = current[feed];
+      return {
+        ...current,
+        [feed]: {
+          mode: hasData ? "stale" : "offline",
+          updatedAt: previous?.updatedAt || 0,
+          source: previous?.source || "上游暂不可用",
+          label: FEED_LABELS[feed],
+        },
+      };
+    });
+  }, []);
+
+  const connection = useMemo<"loading" | "online" | "stale" | "offline">(() => {
+    const rows = Object.values(feedStates);
+    if (!rows.length) return "loading";
+    if (rows.some((item) => item?.mode === "offline")) return "offline";
+    if (rows.some((item) => item?.mode === "stale")) return "stale";
+    return "online";
+  }, [feedStates]);
+  const meta = useMemo<MarketMeta | null>(() => {
+    const rank = { offline: 3, stale: 2, cache: 1, live: 0 };
+    const rows = Object.values(feedStates).filter((item): item is FeedSnapshot => Boolean(item));
+    return rows.sort((a, b) => rank[b.mode] - rank[a.mode] || (a.updatedAt || 0) - (b.updatedAt || 0))[0] || null;
+  }, [feedStates]);
+
+  useEffect(() => { detailRef.current = detail; }, [detail]);
+  useEffect(() => { quotesRef.current = quotes; }, [quotes]);
+  useEffect(() => { speedsRef.current = speeds4m; }, [speeds4m]);
+  useEffect(() => { turnoverRef.current = marketTurnover; }, [marketTurnover]);
+
+  const refreshQuotes = useCallback(async (silent = false, scope: "all" | "priority" | "overseas" = "all") => {
     if (!watchlist.length) return;
     if (silent && quoteBusy.current) return;
     const requestId = ++quoteRequest.current;
     quoteBusy.current = true;
     if (!silent) setRefreshing(true);
     try {
-      const secids = watchlist.map(keyOf).join(",");
+      const priorityKeys = new Set([activeKey, "1.000001", "0.399001", "100.KS11", ...Array.from(pinned)]);
+      const requestedStocks = scope === "all"
+        ? watchlist
+        : scope === "overseas"
+          ? watchlist.filter((stock) => stock.market === 100 || stock.market === 101)
+          : watchlist.filter((stock) => priorityKeys.has(keyOf(stock))).slice(0, 14);
+      if (!requestedStocks.length) return;
+      const secids = requestedStocks.map(keyOf).join(",");
       const data = await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(secids)}`);
       if (requestId !== quoteRequest.current) return;
       setQuotes((current) => {
@@ -382,26 +539,40 @@ export function StockTerminal() {
         });
         return next;
       });
-      updateConnection(data.meta);
+      updateConnection(data.meta, "quotes");
     } catch (error) {
       if (requestId === quoteRequest.current) {
-        setConnection(Object.keys(quotes).length ? "stale" : "offline");
+        markFeedFailure("quotes", Object.keys(quotesRef.current).length > 0);
         if (!silent) setNotice(error instanceof Error ? error.message : "刷新失败");
       }
     } finally {
       if (requestId === quoteRequest.current) quoteBusy.current = false;
       if (!silent) setRefreshing(false);
     }
-  }, [quotes, updateConnection, watchlist]);
+  }, [activeKey, markFeedFailure, pinned, updateConnection, watchlist]);
 
-  useEffect(() => { refreshQuotes(); }, [watchlist.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { refreshQuotes(false, "all"); }, [watchlist.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") refreshQuotes(true);
-    }, 3_000);
-    return () => window.clearInterval(timer);
-  }, [refreshQuotes]);
+    let timer = 0;
+    const poll = async () => {
+      const trading = isAShareTrading();
+      if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "overseas");
+      timer = window.setTimeout(poll, trading ? 3_000 : 15_000);
+    };
+    timer = window.setTimeout(poll, isAShareTrading() ? 3_000 : 15_000);
+    return () => window.clearTimeout(timer);
+  }, [pollingPaused, refreshQuotes]);
+
+  useEffect(() => {
+    let timer = 0;
+    const pollAll = async () => {
+      if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, "all");
+      timer = window.setTimeout(pollAll, isAShareTrading() ? 20_000 : 60_000);
+    };
+    timer = window.setTimeout(pollAll, isAShareTrading() ? 20_000 : 60_000);
+    return () => window.clearTimeout(timer);
+  }, [pollingPaused, refreshQuotes]);
 
   const refreshSpeeds = useCallback(async () => {
     if (!watchlist.length || speedBusy.current) return;
@@ -414,34 +585,37 @@ export function StockTerminal() {
         data.items.forEach((item) => { next[`${item.market}.${item.code}`] = item.speed4m; });
         return next;
       });
-    } catch { /* Keep the previous four-minute readings until the next successful refresh. */ }
+      updateConnection(data.meta, "speeds");
+    } catch { markFeedFailure("speeds", Object.keys(speedsRef.current).length > 0); }
     finally { speedBusy.current = false; }
-  }, [watchlist]);
+  }, [markFeedFailure, updateConnection, watchlist]);
 
   useEffect(() => {
     const initial = window.setTimeout(refreshSpeeds, 2_500);
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") refreshSpeeds();
-    }, 20_000);
+      if (!pollingPaused && document.visibilityState === "visible") refreshSpeeds();
+    }, isAShareTrading() ? 20_000 : 60_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
-  }, [refreshSpeeds]);
+  }, [pollingPaused, refreshSpeeds]);
 
   const refreshMarketTurnover = useCallback(async () => {
     if (turnoverBusy.current) return;
     turnoverBusy.current = true;
     try {
-      setMarketTurnover(await fetchJson<MarketTurnover>("/api/market?action=market-turnover", 15_000));
-    } catch { /* Keep the latest verified market total during a temporary upstream interruption. */ }
+      const next = await fetchJson<MarketTurnover>("/api/market?action=market-turnover", 15_000);
+      setMarketTurnover(next);
+      updateConnection(next.meta, "turnover");
+    } catch { markFeedFailure("turnover", Boolean(turnoverRef.current)); }
     finally { turnoverBusy.current = false; }
-  }, []);
+  }, [markFeedFailure, updateConnection]);
 
   useEffect(() => {
     refreshMarketTurnover();
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") refreshMarketTurnover();
-    }, 15_000);
+      if (!pollingPaused && document.visibilityState === "visible") refreshMarketTurnover();
+    }, isAShareTrading() ? 15_000 : 60_000);
     return () => window.clearInterval(timer);
-  }, [refreshMarketTurnover]);
+  }, [pollingPaused, refreshMarketTurnover]);
 
   const refreshDetail = useCallback(async (silent = false) => {
     const stock = watchlist.find((item) => keyOf(item) === activeKey) || watchlist[0];
@@ -451,18 +625,27 @@ export function StockTerminal() {
     const requestId = ++detailRequest.current;
     detailBusy.current = stockKey;
     try {
-      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}`);
+      const previous = detailRef.current;
+      const canDelta = silent && previous && keyOf(previous.quote) === stockKey;
+      const since = canDelta ? previous.trends.at(-1)?.time || "" : "";
+      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=${canDelta ? "0" : "1"}&since=${encodeURIComponent(since)}`);
       if (requestId !== detailRequest.current) return;
-      setDetail(data);
-      updateConnection(data.meta);
+      setDetail((current) => {
+        if (!canDelta || !current || keyOf(current.quote) !== stockKey) return data;
+        const trends = new Map(current.trends.map((row) => [row.time, row]));
+        data.trends.forEach((row) => trends.set(row.time, row));
+        return { ...data, trends: Array.from(trends.values()).sort((a, b) => a.time.localeCompare(b.time)), klines: data.klines.length ? data.klines : current.klines, preClose: data.preClose ?? current.preClose };
+      });
+      updateConnection(data.meta, "detail");
     } catch (error) {
       if (requestId === detailRequest.current && !silent) {
         setNotice(error instanceof Error ? error.message : "个股数据加载失败");
       }
+      if (requestId === detailRequest.current) markFeedFailure("detail", Boolean(detailRef.current));
     } finally {
       if (requestId === detailRequest.current) detailBusy.current = null;
     }
-  }, [activeKey, updateConnection, watchlist]);
+  }, [activeKey, markFeedFailure, updateConnection, watchlist]);
 
   useEffect(() => {
     setDetail(null);
@@ -470,15 +653,20 @@ export function StockTerminal() {
   }, [activeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (page === "watch" && document.visibilityState === "visible") refreshDetail(true);
-    }, 3_000);
-    return () => window.clearInterval(timer);
-  }, [page, refreshDetail]);
+    let timer = 0;
+    const poll = async () => {
+      const active = watchlist.find((item) => keyOf(item) === activeKey);
+      const delay = active && (active.market === 0 || active.market === 1 || active.market === 102) && !isAShareTrading() ? 60_000 : 15_000;
+      if (!pollingPaused && page === "watch" && document.visibilityState === "visible") await refreshDetail(true);
+      timer = window.setTimeout(poll, delay);
+    };
+    timer = window.setTimeout(poll, 15_000);
+    return () => window.clearTimeout(timer);
+  }, [activeKey, page, pollingPaused, refreshDetail, watchlist]);
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([refreshQuotes(true), refreshDetail(true), refreshSpeeds(), refreshMarketTurnover()]);
+    await Promise.all([refreshQuotes(true, "all"), refreshDetail(true), refreshSpeeds(), refreshMarketTurnover()]);
     setRefreshing(false);
   }, [refreshDetail, refreshMarketTurnover, refreshQuotes, refreshSpeeds]);
 
@@ -520,11 +708,21 @@ export function StockTerminal() {
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
     const value = query.trim();
-    if (suggestions[0]) { addStock(suggestions[0]); return; }
+    if (suggestions[suggestionIndex]) { addStock(suggestions[suggestionIndex]); return; }
     if (/^\d{6}$/.test(value)) {
       const market = /^(6|5|9)/.test(value) ? 1 : 0;
       addStock({ code: value, market, name: value });
     } else if (value) setNotice("请输入六位代码，或从搜索结果中选择");
+  };
+
+  const handleSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" && suggestions.length) {
+      event.preventDefault(); setSuggestionIndex((current) => (current + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp" && suggestions.length) {
+      event.preventDefault(); setSuggestionIndex((current) => (current - 1 + suggestions.length) % suggestions.length);
+    } else if (event.key === "Escape") {
+      setQuery(""); setSuggestions([]); searchRef.current?.blur();
+    }
   };
 
   const removeStock = (key: string) => {
@@ -565,10 +763,47 @@ export function StockTerminal() {
     dragged.current = null;
   };
 
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key === "/") {
+        event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return;
+      }
+      if (isTextEntry(event.target) || event.altKey || event.metaKey || event.ctrlKey) return;
+      if (event.key === "1" || event.key === "2" || event.key === "3") {
+        setPage(event.key === "1" ? "watch" : event.key === "2" ? "sector" : "capital"); return;
+      }
+      if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "k") {
+        if (!displayedStocks.length) return;
+        event.preventDefault();
+        const current = displayedStocks.findIndex((stock) => keyOf(stock) === activeKey);
+        const delta = event.key.toLowerCase() === "j" ? 1 : -1;
+        const next = (Math.max(current, 0) + delta + displayedStocks.length) % displayedStocks.length;
+        setPage("watch"); setActiveKey(keyOf(displayedStocks[next])); return;
+      }
+      if (event.code === "Space") {
+        event.preventDefault(); setPollingPaused((current) => !current);
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [activeKey, displayedStocks]);
+
   const indexStocks = [quotes["1.000001"], quotes["0.399001"], quotes["100.KS11"]].filter(Boolean);
   const chartLastPoint = chartMode === "time"
     ? detail?.trends.at(-1)?.time?.split(" ").at(-1)?.slice(0, 8)
     : detail?.klines.at(-1)?.date;
+  const alerts = useMemo(() => {
+    const rows: Array<{ key: string; label: string; stockKey?: string; tone: "warning" | "info" }> = [];
+    if (connection === "offline") rows.push({ key: "offline", label: "部分数据源不可用，页面保留最近成功数据", tone: "warning" });
+    else if (connection === "stale") rows.push({ key: "stale", label: "存在过期缓存，请留意各模块数据年龄", tone: "warning" });
+    displayedStocks.forEach((stock) => {
+      const key = keyOf(stock); const quote = quotes[key]; const speed = speeds4m[key];
+      if (quote?.limitState) rows.push({ key: `limit-${key}`, stockKey: key, label: `${quote.name || stock.name} ${quote.limitState === "up" ? "涨停" : "跌停"}${quote.sealedAmount ? ` · 封单 ${amount(quote.sealedAmount)}` : ""}`, tone: "info" });
+      else if (Number.isFinite(speed) && Math.abs(speed) >= 3) rows.push({ key: `speed-${key}`, stockKey: key, label: `${quote?.name || stock.name} 4分钟涨速 ${signed(speed)}`, tone: "warning" });
+    });
+    if (marketTurnover && Math.abs(marketTurnover.deltaPercent) >= 20) rows.push({ key: "turnover", label: `两市成交额较上日同期${marketTurnover.delta >= 0 ? "放量" : "缩量"} ${Math.abs(marketTurnover.deltaPercent).toFixed(1)}%`, tone: "warning" });
+    return rows.slice(0, 6);
+  }, [connection, displayedStocks, marketTurnover, quotes, speeds4m]);
 
   return (
     <div className="terminal-shell">
@@ -586,18 +821,20 @@ export function StockTerminal() {
         <div className="top-actions">
           <div className={`network-pill ${connection}`} role="status" aria-live="polite" title="页面保留最近一次成功数据，失败时不会伪造更新时间">
             <i aria-hidden="true" />
-            <span>{connection === "loading" ? "连接中" : connection === "online" ? "实时同步" : connection === "stale" ? "沿用缓存" : "网络中断"}</span>
+            <span>{pollingPaused ? "自动刷新已暂停" : connection === "loading" ? "连接中" : connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : "部分数据中断"}</span>
             <time>{shortTime(meta?.updatedAt)}</time>
           </div>
           <form className="search" role="search" onSubmit={submitSearch}>
             <span className="search-icon" aria-hidden="true">⌕</span>
-            <input name="stock-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="股票名称 / 代码…" aria-label="搜索股票" />
+            <input ref={searchRef} name="stock-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => { setQuery(event.target.value); setSuggestionIndex(0); }} onKeyDown={handleSearchKeyDown} placeholder="股票名称 / 代码…" aria-label="搜索股票，Control 加斜杠快速聚焦" aria-activedescendant={suggestions[suggestionIndex] ? `suggest-${keyOf(suggestions[suggestionIndex])}` : undefined} />
             {query && <button type="button" className="search-clear" aria-label="清空股票搜索" onClick={() => { setQuery(""); setSuggestions([]); }}>×</button>}
             {(searching || suggestions.length > 0) && <div className="suggestions" aria-live="polite">
               {searching && <div className="suggest-status">正在检索市场…</div>}
-              {!searching && suggestions.map((stock) => <button type="button" key={keyOf(stock)} onClick={() => addStock(stock)}><span><strong>{stock.name}</strong><small>{stock.code}</small></span><em>{stock.market === 1 ? "沪市" : "深市"}</em></button>)}
+              {!searching && suggestions.map((stock, index) => <button type="button" id={`suggest-${keyOf(stock)}`} className={suggestionIndex === index ? "active" : ""} key={keyOf(stock)} onMouseEnter={() => setSuggestionIndex(index)} onClick={() => addStock(stock)}><span><strong>{stock.name}</strong><small>{stock.code}</small></span><em>{stock.market === 1 ? "沪市" : "深市"}</em></button>)}
+              {!searching && <div className="search-shortcuts"><span>↑↓ 选择</span><span>Enter 添加</span><span>Esc 关闭</span></div>}
             </div>}
           </form>
+          <button type="button" className={`pause-button ${pollingPaused ? "active" : ""}`} onClick={() => setPollingPaused((current) => !current)} aria-pressed={pollingPaused} title="Space 暂停或恢复自动刷新">{pollingPaused ? "继续" : "暂停"}</button>
           <button type="button" className="refresh-button" onClick={refreshAll} disabled={refreshing} aria-label="立即刷新行情与分时图"><span className={refreshing ? "spin" : ""} aria-hidden="true">↻</span><b>刷新</b></button>
         </div>
       </header>
@@ -613,17 +850,25 @@ export function StockTerminal() {
           <span>两市成交额</span><strong>{marketTurnover ? marketAmount(marketTurnover.currentAmount) : "同步中…"}</strong>
           {marketTurnover && <em className={tone(marketTurnover.delta)}>{marketTurnover.delta >= 0 ? "较上日同期放量" : "较上日同期缩量"} {marketAmount(Math.abs(marketTurnover.delta))}（{signed(marketTurnover.deltaPercent)}）</em>}
         </div>
-        <div className="source-note">数据源 {meta?.source || "东方财富"} · 3秒自动刷新</div>
+        <div className="source-note">全局取最差状态 · {feedModeLabel(meta?.mode)} · {feedAge(meta?.updatedAt)}</div>
       </section>
 
+      {alerts.length > 0 && <section className="alert-tape" aria-label="行情异常提醒">
+        <strong>提醒</strong>
+        <div>{alerts.map((item) => <button type="button" key={item.key} className={item.tone} onClick={() => { if (item.stockKey) { setPage("watch"); setActiveKey(item.stockKey); } }}><i aria-hidden="true" />{item.label}</button>)}</div>
+      </section>}
+
       {page === "watch" && <div className="watch-layout" id="main-content">
-        <aside className="watch-sidebar panel">
-          <div className="panel-title"><div><span>WATCHLIST</span><strong>我的自选</strong></div><em>{watchlist.length}</em></div>
+        <aside className={`watch-sidebar panel ${compactList ? "compact-list" : ""}`}>
+          <div className="panel-title"><div><span>WATCHLIST</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
           <div className="watch-columns"><span>名称 / 代码</span><span>最新 / 涨幅</span><span>4分涨速</span></div>
+          <div className="watch-sortbar" aria-label="自选股临时排序">
+            {([ ["manual", "手动"], ["change", "涨幅"], ["speed", "4分"], ["amount", "成交额"] ] as Array<[WatchSort, string]>).map(([key, label]) => <button type="button" key={key} className={watchSort === key ? "active" : ""} aria-pressed={watchSort === key} onClick={() => setWatchSort(key)}>{label}</button>)}
+          </div>
           <div className="watch-list">
             {displayedStocks.map((stock) => {
               const key = keyOf(stock); const quote = quotes[key];
-              return <div key={key} draggable onDragStart={() => { dragged.current = key; }} onDragOver={(event) => event.preventDefault()} onDrop={() => dropOn(key)}
+              return <div key={key} draggable={watchSort === "manual"} onDragStart={() => { if (watchSort === "manual") dragged.current = key; }} onDragOver={(event) => { if (watchSort === "manual") event.preventDefault(); }} onDrop={() => { if (watchSort === "manual") dropOn(key); }}
                 className={`watch-row ${activeKey === key ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
                 <button type="button" className="watch-select" aria-pressed={activeKey === key} onClick={() => setActiveKey(key)}>
                   <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small><span>{stock.code}</span><em>{marketLabel(stock.market)}</em>{quote?.limitState && quote.sealedAmount ? <b className={`limit-badge ${quote.limitState}`}>{quote.limitState === "up" ? "涨停" : "跌停"}封单 {amount(quote.sealedAmount)}</b> : null}</small></span>
@@ -635,13 +880,13 @@ export function StockTerminal() {
             })}
             {!watchlist.length && <EmptyState title="自选列表为空" detail="在顶部搜索并添加股票" />}
           </div>
-          <div className="sidebar-hint"><span>拖动排序</span><span>右键管理</span></div>
+          <div className="sidebar-hint"><span>{watchSort === "manual" ? "拖动排序 · 右键管理" : "临时排序 · 手动顺序已保留"}</span><span>J/K 切换</span></div>
         </aside>
 
         <main className="research-main">
           <section className="quote-hero panel">
             {activeQuote ? <>
-              <div className="quote-heading"><div className="quote-symbol"><span>{marketLabel(activeQuote.market)}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><div className="quote-updated"><i className={connection === "online" ? "live" : ""} />行情时间 {shortTime(detail?.meta.updatedAt || meta?.updatedAt)}</div></div>
+              <div className="quote-heading"><div className="quote-symbol"><span>{marketLabel(activeQuote.market)}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><DataStamp meta={detail?.meta || feedStates.detail} label="个股详情" compact /></div>
               <div className="price-cluster"><strong className={tone(activeQuote.changePercent)}>{number(activeQuote.price)}</strong><div className={tone(activeQuote.changePercent)}><span>{signed(activeQuote.changePercent)}</span><small>较前收 {number(activeQuote.prevClose)}</small></div></div>
               <div className="metric-grid">
                 {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
@@ -650,16 +895,16 @@ export function StockTerminal() {
           </section>
 
           <section className="chart-panel panel">
-            <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <span><i className="avg-line" />均价</span>}<em>{detail?.meta.mode === "stale" ? `上游波动 · 最近行情点 ${chartLastPoint || "—"}` : `${chartMode === "time" ? "实时行情点" : "最新交易日"} ${chartLastPoint || "—"} · 3秒更新`}</em></div>
+            <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "分时增量约15秒 · 摘要约3秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
             <MarketChart detail={detail} mode={chartMode} />
           </section>
         </main>
 
-        <aside className="insight-rail">
+        <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
           <section className="panel pulse-card"><div className="section-head compact"><div><span>MARKET PULSE</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => setActiveKey(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
-          <section className="panel reliability-card"><div className="section-head compact"><div><span>DATA HEALTH</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "A" : connection === "stale" ? "B" : "—"}</strong><div><span>{connection === "online" ? "连接稳定" : connection === "stale" ? "容错保护中" : "等待连接"}</span><p>超时重试 · 请求合并 · 旧值保留</p></div></div><ul><li><span>浏览器跨域</span><b>已隔离</b></li><li><span>失败数据</span><b>不覆盖</b></li><li><span>页面隐藏</span><b>暂停轮询</b></li></ul></section>
-          <section className="panel note-card"><span>使用说明</span><p>红涨绿跌。数据仅供研究，不构成投资建议；若上游中断，页面会明确标记并保留最近一次成功结果。</p></section>
+          <section className="panel reliability-card"><div className="section-head compact"><div><span>DATA HEALTH</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "A" : connection === "stale" ? "B" : connection === "offline" ? "C" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
+          <section className="panel note-card"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>Ctrl + / 搜索 · 1/2/3 页面 · Space 暂停</kbd></section>
         </aside>
       </div>}
 
@@ -677,7 +922,7 @@ export function StockTerminal() {
   );
 }
 
-function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta) => void }) {
+function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
   const [type, setType] = useState<"concept" | "industry">("concept");
   const [sectors, setSectors] = useState<Sector[]>([]);
   const [active, setActive] = useState<Sector | null>(null);
@@ -690,13 +935,16 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
   const [detailError, setDetailError] = useState("");
   const [detailNonce, setDetailNonce] = useState(0);
   const [error, setError] = useState("");
+  const [sectorMeta, setSectorMeta] = useState<MarketMeta | null>(null);
+  const [detailMeta, setDetailMeta] = useState<MarketMeta | null>(null);
   const sectorStockCache = useRef(new Map<string, { items: SectorStock[]; sector?: { change: number | null; inflow: number | null } }>());
+  const detailMetaRef = useRef<MarketMeta | null>(null);
 
   useEffect(() => {
     let cancelled = false; setLoading(true); setError("");
     fetchJson<{ items: Sector[]; meta: MarketMeta }>(`/api/market?action=sectors&type=${type}`)
-      .then((data) => { if (!cancelled) { setSectors(data.items); setActive(data.items[0] || null); updateConnection(data.meta); } })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "板块数据加载失败"); })
+      .then((data) => { if (!cancelled) { setSectors(data.items); setActive(data.items[0] || null); setSectorMeta(data.meta); updateConnection(data.meta, "sectors"); } })
+      .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : "板块数据加载失败"); const failed = { mode: "offline" as const, updatedAt: 0, source: "板块行情暂不可用" }; setSectorMeta(failed); updateConnection(failed, "sectors"); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [type, updateConnection]);
@@ -718,12 +966,13 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
           if (cancelled) return;
           sectorStockCache.current.set(activeCode, { items: data.items, sector: data.sector });
           setStocks(data.items);
+          setDetailMeta(data.meta); detailMetaRef.current = data.meta;
           if (data.sector) {
             setSectors((current) => current.map((sector) => sector.code === activeCode ? { ...sector, ...data.sector } : sector));
             setActive((current) => current?.code === activeCode ? { ...current, ...data.sector } : current);
           }
           setDetailError("");
-          updateConnection(data.meta);
+          updateConnection(data.meta, "sector-detail");
           return;
         } catch (nextError) {
           lastError = nextError;
@@ -731,17 +980,24 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
         }
       }
       if (cancelled) return;
-      if (cached?.items.length) setDetailError("网络波动，正在显示本次访问中最近成功的数据");
+      if (cached?.items.length) { setDetailError("网络波动，正在显示本次访问中最近成功的数据"); const stale = { mode: "stale" as const, updatedAt: detailMetaRef.current?.updatedAt || 0, source: detailMetaRef.current?.source || "板块成分缓存" }; setDetailMeta(stale); updateConnection(stale, "sector-detail"); }
       else {
         setStocks([]);
         setDetailError(lastError instanceof Error ? lastError.message : "成分股连接失败");
+        const failed = { mode: "offline" as const, updatedAt: 0, source: "板块成分暂不可用" }; setDetailMeta(failed); updateConnection(failed, "sector-detail");
       }
     };
     load().finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
   }, [active?.code, detailNonce, updateConnection]);
 
-  const sortedSectors = useMemo(() => [...sectors].sort((a, b) => ((b[sort] || 0) - (a[sort] || 0)) * (descending ? 1 : -1)), [descending, sectors, sort]);
+  const metricAvailable = useMemo(() => ({
+    change: sectors.some((sector) => Number.isFinite(sector.change)),
+    speed: sectors.some((sector) => Number.isFinite(sector.speed)),
+    inflow: sectors.some((sector) => Number.isFinite(sector.inflow)),
+  }), [sectors]);
+  const validMetricCount = sectors.filter((sector) => Number.isFinite(sector.change) || Number.isFinite(sector.speed) || Number.isFinite(sector.inflow)).length;
+  const sortedSectors = useMemo(() => metricAvailable[sort] ? [...sectors].sort((a, b) => ((b[sort] ?? Number.NEGATIVE_INFINITY) - (a[sort] ?? Number.NEGATIVE_INFINITY)) * (descending ? 1 : -1)) : sectors, [descending, metricAvailable, sectors, sort]);
   const sortedStocks = useMemo(() => [...stocks].sort((a, b) => ((b[stockSort] || 0) - (a[stockSort] || 0))), [stockSort, stocks]);
   const changeSort = (next: typeof sort) => { if (sort === next) setDescending((value) => !value); else { setSort(next); setDescending(true); } };
 
@@ -749,25 +1005,28 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
     <aside className="sector-sidebar panel">
       <div className="panel-title"><div><span>SECTOR RADAR</span><strong>板块强弱</strong></div><em>{sectors.length}</em></div>
       <div className="segmented"><button type="button" aria-pressed={type === "concept"} className={type === "concept" ? "active" : ""} onClick={() => setType("concept")}>概念板块</button><button type="button" aria-pressed={type === "industry"} className={type === "industry" ? "active" : ""} onClick={() => setType("industry")}>行业板块</button></div>
-      <div className="sector-sort"><span>排序</span><button className={sort === "change" ? "active" : ""} onClick={() => changeSort("change")}>涨幅 {sort === "change" ? descending ? "↓" : "↑" : ""}</button><button className={sort === "speed" ? "active" : ""} onClick={() => changeSort("speed")}>涨速</button><button className={sort === "inflow" ? "active" : ""} onClick={() => changeSort("inflow")}>净流入</button></div>
-      <div className="sector-list" aria-label="板块列表">{loading ? <LoadingRows count={10} /> : error ? <EmptyState title="板块连接失败" detail={error} /> : !sortedSectors.length ? <EmptyState title="暂无可用板块" detail="实时分类数据正在恢复" /> : sortedSectors.map((sector, index) => <button type="button" key={sector.code} aria-pressed={active?.code === sector.code} className={active?.code === sector.code ? "active" : ""} onClick={() => setActive(sector)}><em>{String(index + 1).padStart(2, "0")}</em><span><strong>{sector.name}</strong><small>{amount(sector.inflow)}</small></span><b className={tone(sector.change)}>{signed(sector.change)}</b></button>)}</div>
+      <DataStamp meta={sectorMeta} label="板块列表" compact />
+      <div className={`sector-data-state ${validMetricCount ? "available" : "classification-only"}`}><strong>{validMetricCount ? `${validMetricCount}/${sectors.length} 个板块有实时指标` : "板块行情暂不可用"}</strong><span>{validMetricCount ? "排序只基于有效行情" : "当前仅显示行业分类缓存，排序已停用"}</span></div>
+      <div className="sector-sort"><span>排序</span><button disabled={!metricAvailable.change} className={sort === "change" ? "active" : ""} onClick={() => changeSort("change")}>涨幅 {sort === "change" && metricAvailable.change ? descending ? "↓" : "↑" : ""}</button><button disabled={!metricAvailable.speed} className={sort === "speed" ? "active" : ""} onClick={() => changeSort("speed")}>涨速</button><button disabled={!metricAvailable.inflow} className={sort === "inflow" ? "active" : ""} onClick={() => changeSort("inflow")}>净流入</button></div>
+      <div className="sector-list" aria-label="板块列表">{loading ? <LoadingRows count={10} /> : error ? <EmptyState title="板块连接失败" detail={error} /> : !sortedSectors.length ? <EmptyState title="暂无可用板块" detail="实时分类数据正在恢复" /> : sortedSectors.map((sector, index) => <button type="button" key={sector.code} aria-pressed={active?.code === sector.code} className={active?.code === sector.code ? "active" : ""} onClick={() => setActive(sector)}><em>{String(index + 1).padStart(2, "0")}</em><span><strong>{sector.name}</strong><small>{Number.isFinite(sector.inflow) ? amount(sector.inflow) : "仅分类"}</small></span><b className={tone(sector.change)}>{signed(sector.change)}</b></button>)}</div>
     </aside>
     <main className="sector-main panel">
-      <div className="sector-hero"><div><span>{type === "concept" ? "CONCEPT" : "INDUSTRY"} / {active?.code || "—"}</span><h1>{active?.name || "选择一个板块"}</h1><p>{type === "industry" ? "参考同花顺行业分类 · 已合并重复层级" : "参考同花顺概念分类 · 已排除涨停、新高等行情标签"}</p></div>{active && <div className="sector-stat"><span>板块涨幅</span><strong className={tone(active.change)}>{signed(active.change)}</strong><em>净流入 {amount(active.inflow)}</em></div>}</div>
-      <div className="table-toolbar"><div><strong>成分股</strong><span>{detailLoading && !stocks.length ? "连接中…" : `${stocks.length} 支`}</span></div><div className="table-sorts"><button className={stockSort === "change" ? "active" : ""} onClick={() => setStockSort("change")}>涨幅</button><button className={stockSort === "speed" ? "active" : ""} onClick={() => setStockSort("speed")}>涨速</button><button className={stockSort === "inflow" ? "active" : ""} onClick={() => setStockSort("inflow")}>资金</button></div></div>
+      <div className="sector-hero"><div><span>{type === "concept" ? "CONCEPT" : "INDUSTRY"} / {active?.code || "—"}</span><h1>{active?.name || "选择一个板块"}</h1><p>{type === "industry" ? "参考同花顺行业分类 · 已合并重复层级" : "参考同花顺概念分类 · 已排除涨停、新高等行情标签"}</p></div>{active && <div className="sector-stat"><span>板块涨幅</span><strong className={tone(active.change)}>{Number.isFinite(active.change) ? signed(active.change) : "行情待恢复"}</strong><em>净流入 {amount(active.inflow)}</em></div>}</div>
+      <div className="table-toolbar"><div><strong>成分股</strong><span>{detailLoading && !stocks.length ? "连接中…" : `${stocks.length} 支`}</span></div><DataStamp meta={detailMeta} label="板块成分" compact /><div className="table-sorts"><button className={stockSort === "change" ? "active" : ""} onClick={() => setStockSort("change")}>涨幅</button><button className={stockSort === "speed" ? "active" : ""} onClick={() => setStockSort("speed")}>涨速</button><button className={stockSort === "inflow" ? "active" : ""} onClick={() => setStockSort("inflow")}>资金</button></div></div>
       <div className="stock-table"><div className="table-head"><span>排名</span><span>股票</span><span>最新价</span><span>涨跌幅</span><span>涨速</span><span>主力净流入</span><span /></div>{detailLoading && !stocks.length ? <LoadingRows count={6} /> : detailError && !stocks.length ? <div className="sector-detail-error"><strong>成分股暂时没有返回</strong><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>立即重试</button></div> : <>{detailError && <div className="sector-cache-note"><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>重新连接</button></div>}{sortedStocks.map((stock, index) => <button className="table-row" key={`${stock.market}.${stock.code}`} onClick={() => onPick(stock)}><span>{String(index + 1).padStart(2, "0")}</span><span><strong>{stock.name}</strong><small>{stock.code}</small></span><span>{number(stock.price)}</span><span className={tone(stock.change)}>{signed(stock.change)}</span><span className={tone(stock.speed)}>{signed(stock.speed)}</span><span className={tone(stock.inflow)}>{amount(stock.inflow)}</span><span>＋自选</span></button>)}</>}</div>
     </main>
   </div>;
 }
 
-function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta) => void }) {
+function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
   const [data, setData] = useState<CapitalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const dataRef = useRef<CapitalData | null>(null);
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    try { const next = await fetchJson<CapitalData>("/api/market?action=capital"); setData(next); updateConnection(next.meta); }
-    catch (err) { setError(err instanceof Error ? err.message : "资金数据加载失败"); }
+    try { const next = await fetchJson<CapitalData>("/api/market?action=capital"); dataRef.current = next; setData(next); updateConnection(next.meta, "capital"); }
+    catch (err) { const previous = dataRef.current; setError(err instanceof Error ? err.message : "资金数据加载失败"); updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "资金流暂不可用" }, "capital"); }
     finally { setLoading(false); }
   }, [updateConnection]);
   useEffect(() => { load(); const timer = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 30_000); return () => window.clearInterval(timer); }, [load]);
@@ -776,7 +1035,7 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
   if (error && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><EmptyState title="资金流连接失败" detail={error} /><button type="button" className="retry" onClick={load}>重新连接</button></section></div>;
   return <div className="capital-layout" id="main-content">
     <main className="capital-main panel">
-      <div className="capital-hero"><div><span>CAPITAL FLOW / 000300</span><h1>沪深300资金温度</h1><p>主力资金净流入逐分钟累计值</p></div><div className="capital-price"><small>{data?.quote.name}</small><strong>{number(data?.quote.price)}</strong><em className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</em></div></div>
+      <div className="capital-hero"><div><span>CAPITAL FLOW / 000300</span><h1>沪深300资金温度</h1><p>主力资金净流入逐分钟累计值</p><DataStamp meta={data?.meta} label="资金流向" compact /></div><div className="capital-price"><small>{data?.quote.name}</small><strong>{number(data?.quote.price)}</strong><em className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</em></div></div>
       <div className="capital-kpis"><div><span>主力净流入</span><strong className={tone(mainNet)}>{amount(mainNet)}</strong><em>当前累计</em></div><div><span>沪深300涨幅</span><strong className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</strong><em>指数表现</em></div><div><span>行情涨速</span><strong className={tone(data?.quote.speed)}>{signed(data?.quote.speed)}</strong><em>短时动量</em></div><div><span>最近同步</span><strong>{shortTime(data?.meta.updatedAt)}</strong><em>{data?.meta.mode === "stale" ? "缓存保护" : "实时数据"}</em></div></div>
       <div className="flow-card"><div className="section-head"><div><span>INTRADAY MAIN FLOW</span><strong>主力资金轨迹</strong></div><button onClick={load} disabled={loading}>{loading ? "同步中…" : "重新同步"}</button></div><FlowChart rows={data?.flow || []} /></div>
     </main>

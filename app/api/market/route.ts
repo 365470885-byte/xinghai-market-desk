@@ -539,7 +539,7 @@ async function quotes(secids: string[]) {
   };
 }
 
-async function detail(secid: string) {
+async function detail(secid: string, since = "", includeKline = true) {
   if (!/^\d{1,3}\.[A-Z0-9]{4,8}$/i.test(secid)) throw new Error("证券代码格式不正确");
   const [specialMarketText, specialCode] = secid.split(".");
   const specialMarket = Number(specialMarketText);
@@ -558,7 +558,7 @@ async function detail(secid: string) {
     }
     return {
       quote,
-      trends,
+      trends: since ? trends.filter((row) => row.time > since) : trends,
       klines: [],
       preClose: quote.prevClose,
       meta: trendMeta
@@ -572,18 +572,19 @@ async function detail(secid: string) {
   const klineUrl = `${EASTMONEY_HISTORY}/stock/kline/get?secid=${encodeURIComponent(secid)}&klt=101&fqt=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&end=20500101&lmt=45`;
   // Quote, intraday and daily data are independent. Running them together keeps
   // a three-second refresh from being delayed by three sequential round trips.
-  const settled = await Promise.allSettled([
+  const detailRequests = [
     resilientJson(quoteUrl, 2_000, { attempts: 2, timeoutMs: 4_000 }),
     resilientJson(trendsUrl, 2_000, { attempts: 2, timeoutMs: 4_000 }),
-    resilientJson(klineUrl, 90_000, { attempts: 2, timeoutMs: 4_000 }),
-  ]);
+  ];
+  if (includeKline) detailRequests.push(resilientJson(klineUrl, 90_000, { attempts: 2, timeoutMs: 4_000 }));
+  const settled = await Promise.allSettled(detailRequests);
   const available = settled.filter((item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof resilientJson>>> => item.status === "fulfilled").map((item) => item.value);
   const quoteResult = settled[0].status === "fulfilled" ? settled[0].value : null;
   const trendsResult = settled[1].status === "fulfilled" ? settled[1].value : null;
-  const klineResult = settled[2].status === "fulfilled" ? settled[2].value : null;
+  const klineResult = includeKline && settled[2]?.status === "fulfilled" ? settled[2].value : null;
   const realtimeAvailable = [quoteResult, trendsResult].filter((item): item is Awaited<ReturnType<typeof resilientJson>> => Boolean(item));
 
-  let trends = (trendsResult?.value?.data?.trends ?? []).map((row: string) => {
+  let trends: Array<{ time: string; price: number | null; average: number | null; volume: number | null; amount: number | null }> = (trendsResult?.value?.data?.trends ?? []).map((row: string) => {
     const parts = row.split(",");
     return { time: parts[0], price: numeric(parts[2]), average: numeric(parts[7]), volume: numeric(parts[5]), amount: numeric(parts[6]) };
   }).filter((item: { price: number | null }) => item.price !== null);
@@ -625,7 +626,7 @@ async function detail(secid: string) {
         available.push(sinaTrend); realtimeAvailable.push(sinaTrend); usedSina = true;
       } catch { /* Quote data remains usable if the backup intraday feed also fails. */ }
     }
-    if (!klines.length) {
+    if (includeKline && !klines.length) {
       try {
         const sinaKline = await resilientText(`https://quotes.sina.cn/cn/api/jsonp_v2.php/callback/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=45`, 90_000);
         const rows = parseSinaJsonp(sinaKline.value) ?? [];
@@ -642,7 +643,7 @@ async function detail(secid: string) {
 
   return {
     quote: { ...quote, market: Number(secid.split(".")[0]) },
-    trends,
+    trends: since ? trends.filter((row) => row.time > since) : trends,
     klines,
     preClose: numeric(trendsResult?.value?.data?.preClose ?? trendsResult?.value?.data?.prePrice),
     meta: { ...metaFrom(...(realtimeAvailable.length ? realtimeAvailable : available)), source: usedSina ? "东方财富 + 新浪行情" : "东方财富" },
@@ -940,12 +941,6 @@ async function thsIndustryStocks(code: string) {
 }
 
 async function sectors(type: string) {
-  if (type === "industry") {
-    return {
-      items: THS_INDUSTRY_CATALOG.map((item) => ({ ...item, change: null, speed: null, inflow: null })),
-      meta: { mode: "cache" as CacheMode, updatedAt: Date.now(), source: "同花顺行业分类" },
-    };
-  }
   const fs = sectorFilters[type] ?? sectorFilters.concept;
   const pageCount = 2;
   const results: Array<Awaited<ReturnType<typeof resilientJson>>> = [];
@@ -988,7 +983,16 @@ async function sectors(type: string) {
         },
       };
     } catch {
-      if (!eastmoneyItems.length || !results.length) throw new Error("行业板块暂时无法连接");
+      if (!eastmoneyItems.length || !results.length) {
+        return {
+          items: THS_INDUSTRY_CATALOG.map((item) => ({ ...item, change: null, speed: null, inflow: null })),
+          meta: {
+            mode: "stale" as CacheMode,
+            updatedAt: 0,
+            source: "同花顺行业分类缓存（行情不可用）",
+          },
+        };
+      }
     }
   }
 
@@ -1066,7 +1070,11 @@ export async function GET(request: Request) {
   const action = url.searchParams.get("action") ?? "quotes";
   try {
     if (action === "quotes") return json(await quotes(normalizeSecids(url.searchParams.get("secids"))));
-    if (action === "detail") return json(await detail(url.searchParams.get("secid") ?? ""));
+    if (action === "detail") return json(await detail(
+      url.searchParams.get("secid") ?? "",
+      url.searchParams.get("since") ?? "",
+      url.searchParams.get("full") !== "0",
+    ));
     if (action === "speeds") return json(await fourMinuteSpeeds(normalizeSecids(url.searchParams.get("secids"))));
     if (action === "market-turnover") return json(await marketTurnover());
     if (action === "sectors") return json(await sectors(url.searchParams.get("type") ?? "concept"));
