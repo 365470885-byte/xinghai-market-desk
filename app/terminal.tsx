@@ -577,7 +577,7 @@ export function StockTerminal() {
     quoteBusy.current[scope] = true;
     if (!silent) setRefreshing(true);
     try {
-      const priorityKeys = new Set([activeKey, "1.000001", "0.399001", "100.KS11", ...Array.from(pinned)]);
+      const priorityKeys = new Set([activeKey, "1.000001", "0.399001", ...Array.from(pinned)]);
       const requestedStocks = scope === "all"
         ? watchlist
         : scope === "overseas"

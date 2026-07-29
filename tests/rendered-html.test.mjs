@@ -65,8 +65,10 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /isAShareTrading\(\) \? 60_000 : 120_000/);
   assert.match(terminal, /full=\$\{includeKline \? "1" : "0"}/);
   assert.match(marketRoute, /preferredRegion = "hkg1"/);
-  assert.match(marketRoute, /batch = await requireComplete\(sinaPromise\)/);
-  assert.match(marketRoute, /const eastmoneyPromise = loadEastmoneyQuotes\(\)/);
+  assert.match(marketRoute, /resilientTencentText/);
+  assert.match(marketRoute, /https:\/\/web\.sqt\.gtimg\.cn\/q=/);
+  assert.match(marketRoute, /appstock\/app\/minute\/query/);
+  assert.match(marketRoute, /loadEastmoneyQuotes\(missingAShares\)/);
   assert.deepEqual(JSON.parse(vercelConfig).regions, ["hkg1"]);
   assert.match(css, /--font-data:/);
   assert.match(css, /\.limit-badge\.up/);
