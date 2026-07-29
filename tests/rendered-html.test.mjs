@@ -31,7 +31,7 @@ test("server-renders the market research desk", async () => {
   const html = await response.text();
   assert.match(html, /<title>星辰大海 · 市场研究台<\/title>/);
   assert.match(html, />自选行情<\/button>/);
-  assert.match(html, />板块雷达<\/button>/);
+  assert.doesNotMatch(html, />板块雷达<\/button>/);
   assert.match(html, />资金流向<\/button>/);
   assert.match(html, /class="skip-link" href="#main-content"/);
   assert.match(html, /role="search"/);

@@ -2,7 +2,7 @@
 
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type PageKey = "watch" | "sector" | "capital";
+type PageKey = "watch" | "capital";
 type ChartMode = "time" | "day";
 type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: number; source: string };
 type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital";
@@ -558,9 +558,9 @@ export function StockTerminal() {
     const poll = async () => {
       const trading = isAShareTrading();
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "overseas");
-      timer = window.setTimeout(poll, trading ? 3_000 : 15_000);
+      timer = window.setTimeout(poll, trading ? 2_000 : 8_000);
     };
-    timer = window.setTimeout(poll, isAShareTrading() ? 3_000 : 15_000);
+    timer = window.setTimeout(poll, isAShareTrading() ? 2_000 : 8_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -568,9 +568,9 @@ export function StockTerminal() {
     let timer = 0;
     const pollAll = async () => {
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, "all");
-      timer = window.setTimeout(pollAll, isAShareTrading() ? 20_000 : 60_000);
+      timer = window.setTimeout(pollAll, isAShareTrading() ? 6_000 : 30_000);
     };
-    timer = window.setTimeout(pollAll, isAShareTrading() ? 20_000 : 60_000);
+    timer = window.setTimeout(pollAll, isAShareTrading() ? 6_000 : 30_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -594,7 +594,7 @@ export function StockTerminal() {
     const initial = window.setTimeout(refreshSpeeds, 2_500);
     const timer = window.setInterval(() => {
       if (!pollingPaused && document.visibilityState === "visible") refreshSpeeds();
-    }, isAShareTrading() ? 20_000 : 60_000);
+    }, isAShareTrading() ? 8_000 : 30_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, [pollingPaused, refreshSpeeds]);
 
@@ -613,7 +613,7 @@ export function StockTerminal() {
     refreshMarketTurnover();
     const timer = window.setInterval(() => {
       if (!pollingPaused && document.visibilityState === "visible") refreshMarketTurnover();
-    }, isAShareTrading() ? 15_000 : 60_000);
+    }, isAShareTrading() ? 10_000 : 30_000);
     return () => window.clearInterval(timer);
   }, [pollingPaused, refreshMarketTurnover]);
 
@@ -656,11 +656,11 @@ export function StockTerminal() {
     let timer = 0;
     const poll = async () => {
       const active = watchlist.find((item) => keyOf(item) === activeKey);
-      const delay = active && (active.market === 0 || active.market === 1 || active.market === 102) && !isAShareTrading() ? 60_000 : 15_000;
+      const delay = active && (active.market === 0 || active.market === 1 || active.market === 102) && !isAShareTrading() ? 30_000 : 5_000;
       if (!pollingPaused && page === "watch" && document.visibilityState === "visible") await refreshDetail(true);
       timer = window.setTimeout(poll, delay);
     };
-    timer = window.setTimeout(poll, 15_000);
+    timer = window.setTimeout(poll, 5_000);
     return () => window.clearTimeout(timer);
   }, [activeKey, page, pollingPaused, refreshDetail, watchlist]);
 
@@ -769,8 +769,8 @@ export function StockTerminal() {
         event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return;
       }
       if (isTextEntry(event.target) || event.altKey || event.metaKey || event.ctrlKey) return;
-      if (event.key === "1" || event.key === "2" || event.key === "3") {
-        setPage(event.key === "1" ? "watch" : event.key === "2" ? "sector" : "capital"); return;
+      if (event.key === "1" || event.key === "2") {
+        setPage(event.key === "1" ? "watch" : "capital"); return;
       }
       if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "k") {
         if (!displayedStocks.length) return;
@@ -814,7 +814,7 @@ export function StockTerminal() {
           <div><strong>星辰大海</strong><small>MARKET INTELLIGENCE</small></div>
         </div>
         <nav className="main-tabs" aria-label="主要页面">
-          {([ ["watch", "自选行情"], ["sector", "板块雷达"], ["capital", "资金流向"] ] as Array<[PageKey, string]>).map(([key, label]) => (
+          {([ ["watch", "自选行情"], ["capital", "资金流向"] ] as Array<[PageKey, string]>).map(([key, label]) => (
             <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => setPage(key)}>{label}</button>
           ))}
         </nav>
@@ -896,7 +896,7 @@ export function StockTerminal() {
 
           <section className="chart-panel panel">
             <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "分时增量约15秒 · 摘要约3秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "分时增量约5秒 · 重点行情约2秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
             <MarketChart detail={detail} mode={chartMode} />
           </section>
         </main>
@@ -904,11 +904,10 @@ export function StockTerminal() {
         <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
           <section className="panel pulse-card"><div className="section-head compact"><div><span>MARKET PULSE</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => setActiveKey(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
           <section className="panel reliability-card"><div className="section-head compact"><div><span>DATA HEALTH</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "A" : connection === "stale" ? "B" : connection === "offline" ? "C" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
-          <section className="panel note-card"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>Ctrl + / 搜索 · 1/2/3 页面 · Space 暂停</kbd></section>
+          <section className="panel note-card"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>Ctrl + / 搜索 · 1/2 页面 · Space 暂停</kbd></section>
         </aside>
       </div>}
 
-      {page === "sector" && <SectorPage onPick={(stock) => addStock(stock)} updateConnection={updateConnection} />}
       {page === "capital" && <CapitalPage updateConnection={updateConnection} />}
 
       {menu && <div className="context-menu" role="menu" aria-label="自选股操作" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }}>
