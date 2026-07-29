@@ -431,9 +431,9 @@ export function StockTerminal() {
   const [searching, setSearching] = useState(false);
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const dragged = useRef<string | null>(null);
-  const quoteRequest = useRef(0);
+  const quoteRequest = useRef<Record<"all" | "priority" | "overseas", number>>({ all: 0, priority: 0, overseas: 0 });
   const detailRequest = useRef(0);
-  const quoteBusy = useRef(false);
+  const quoteBusy = useRef<Record<"all" | "priority" | "overseas", boolean>>({ all: false, priority: false, overseas: false });
   const detailBusy = useRef<string | null>(null);
   const speedBusy = useRef(false);
   const turnoverBusy = useRef(false);
@@ -475,7 +475,21 @@ export function StockTerminal() {
   }, [pinned, quotes, speeds4m, watchSort, watchlist]);
 
   const activeStock = watchlist.find((stock) => keyOf(stock) === activeKey) || watchlist[0] || null;
-  const activeQuote = detail?.quote || (activeStock ? quotes[keyOf(activeStock)] : null);
+  const activeDetail = detail && keyOf(detail.quote) === activeKey ? detail : null;
+  const activeQuote = activeDetail?.quote || (activeStock ? quotes[keyOf(activeStock)] : null);
+
+  const selectStock = useCallback((key: string) => {
+    if (!key) return;
+    setPage("watch");
+    if (key === activeKey) return;
+    // Invalidate the previous stock immediately so a slow response can never
+    // paint over the newly selected row.
+    detailRequest.current += 1;
+    detailBusy.current = null;
+    detailRef.current = null;
+    setDetail(null);
+    setActiveKey(key);
+  }, [activeKey]);
 
   const updateConnection = useCallback((nextMeta: MarketMeta, feed: FeedKey = "quotes") => {
     setFeedStates((current) => ({ ...current, [feed]: { ...nextMeta, label: FEED_LABELS[feed] } }));
@@ -516,9 +530,9 @@ export function StockTerminal() {
 
   const refreshQuotes = useCallback(async (silent = false, scope: "all" | "priority" | "overseas" = "all") => {
     if (!watchlist.length) return;
-    if (silent && quoteBusy.current) return;
-    const requestId = ++quoteRequest.current;
-    quoteBusy.current = true;
+    if (silent && quoteBusy.current[scope]) return;
+    const requestId = ++quoteRequest.current[scope];
+    quoteBusy.current[scope] = true;
     if (!silent) setRefreshing(true);
     try {
       const priorityKeys = new Set([activeKey, "1.000001", "0.399001", "100.KS11", ...Array.from(pinned)]);
@@ -530,7 +544,7 @@ export function StockTerminal() {
       if (!requestedStocks.length) return;
       const secids = requestedStocks.map(keyOf).join(",");
       const data = await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(secids)}`);
-      if (requestId !== quoteRequest.current) return;
+      if (requestId !== quoteRequest.current[scope]) return;
       setQuotes((current) => {
         const next = { ...current };
         data.items.forEach((item) => {
@@ -541,12 +555,12 @@ export function StockTerminal() {
       });
       updateConnection(data.meta, "quotes");
     } catch (error) {
-      if (requestId === quoteRequest.current) {
+      if (requestId === quoteRequest.current[scope]) {
         markFeedFailure("quotes", Object.keys(quotesRef.current).length > 0);
         if (!silent) setNotice(error instanceof Error ? error.message : "刷新失败");
       }
     } finally {
-      if (requestId === quoteRequest.current) quoteBusy.current = false;
+      if (requestId === quoteRequest.current[scope]) quoteBusy.current[scope] = false;
       if (!silent) setRefreshing(false);
     }
   }, [activeKey, markFeedFailure, pinned, updateConnection, watchlist]);
@@ -558,9 +572,9 @@ export function StockTerminal() {
     const poll = async () => {
       const trading = isAShareTrading();
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "overseas");
-      timer = window.setTimeout(poll, trading ? 2_000 : 8_000);
+      timer = window.setTimeout(poll, trading ? 1_000 : 5_000);
     };
-    timer = window.setTimeout(poll, isAShareTrading() ? 2_000 : 8_000);
+    timer = window.setTimeout(poll, isAShareTrading() ? 1_000 : 5_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -568,9 +582,9 @@ export function StockTerminal() {
     let timer = 0;
     const pollAll = async () => {
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, "all");
-      timer = window.setTimeout(pollAll, isAShareTrading() ? 6_000 : 30_000);
+      timer = window.setTimeout(pollAll, isAShareTrading() ? 3_000 : 20_000);
     };
-    timer = window.setTimeout(pollAll, isAShareTrading() ? 6_000 : 30_000);
+    timer = window.setTimeout(pollAll, isAShareTrading() ? 3_000 : 20_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -594,7 +608,7 @@ export function StockTerminal() {
     const initial = window.setTimeout(refreshSpeeds, 2_500);
     const timer = window.setInterval(() => {
       if (!pollingPaused && document.visibilityState === "visible") refreshSpeeds();
-    }, isAShareTrading() ? 8_000 : 30_000);
+    }, isAShareTrading() ? 6_000 : 20_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, [pollingPaused, refreshSpeeds]);
 
@@ -613,7 +627,7 @@ export function StockTerminal() {
     refreshMarketTurnover();
     const timer = window.setInterval(() => {
       if (!pollingPaused && document.visibilityState === "visible") refreshMarketTurnover();
-    }, isAShareTrading() ? 10_000 : 30_000);
+    }, isAShareTrading() ? 5_000 : 20_000);
     return () => window.clearInterval(timer);
   }, [pollingPaused, refreshMarketTurnover]);
 
@@ -648,6 +662,9 @@ export function StockTerminal() {
   }, [activeKey, markFeedFailure, updateConnection, watchlist]);
 
   useEffect(() => {
+    detailRequest.current += 1;
+    detailBusy.current = null;
+    detailRef.current = null;
     setDetail(null);
     refreshDetail(false);
   }, [activeKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -656,11 +673,11 @@ export function StockTerminal() {
     let timer = 0;
     const poll = async () => {
       const active = watchlist.find((item) => keyOf(item) === activeKey);
-      const delay = active && (active.market === 0 || active.market === 1 || active.market === 102) && !isAShareTrading() ? 30_000 : 5_000;
+      const delay = active && (active.market === 0 || active.market === 1 || active.market === 102) && !isAShareTrading() ? 20_000 : 2_000;
       if (!pollingPaused && page === "watch" && document.visibilityState === "visible") await refreshDetail(true);
       timer = window.setTimeout(poll, delay);
     };
-    timer = window.setTimeout(poll, 5_000);
+    timer = window.setTimeout(poll, 2_000);
     return () => window.clearTimeout(timer);
   }, [activeKey, page, pollingPaused, refreshDetail, watchlist]);
 
@@ -700,10 +717,10 @@ export function StockTerminal() {
   const addStock = useCallback((stock: Stock) => {
     const key = keyOf(stock);
     setWatchlist((current) => current.some((item) => keyOf(item) === key) ? current : [...current, stock]);
-    setActiveKey(key);
-    setQuery(""); setSuggestions([]); setPage("watch");
+    selectStock(key);
+    setQuery(""); setSuggestions([]);
     setNotice(watchlist.some((item) => keyOf(item) === key) ? "已在自选列表中" : `已添加 ${stock.name}`);
-  }, [watchlist]);
+  }, [selectStock, watchlist]);
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -778,7 +795,7 @@ export function StockTerminal() {
         const current = displayedStocks.findIndex((stock) => keyOf(stock) === activeKey);
         const delta = event.key.toLowerCase() === "j" ? 1 : -1;
         const next = (Math.max(current, 0) + delta + displayedStocks.length) % displayedStocks.length;
-        setPage("watch"); setActiveKey(keyOf(displayedStocks[next])); return;
+        selectStock(keyOf(displayedStocks[next])); return;
       }
       if (event.code === "Space") {
         event.preventDefault(); setPollingPaused((current) => !current);
@@ -786,12 +803,12 @@ export function StockTerminal() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [activeKey, displayedStocks]);
+  }, [activeKey, displayedStocks, selectStock]);
 
   const indexStocks = [quotes["1.000001"], quotes["0.399001"], quotes["100.KS11"]].filter(Boolean);
   const chartLastPoint = chartMode === "time"
-    ? detail?.trends.at(-1)?.time?.split(" ").at(-1)?.slice(0, 8)
-    : detail?.klines.at(-1)?.date;
+    ? activeDetail?.trends.at(-1)?.time?.split(" ").at(-1)?.slice(0, 8)
+    : activeDetail?.klines.at(-1)?.date;
   const alerts = useMemo(() => {
     const rows: Array<{ key: string; label: string; stockKey?: string; tone: "warning" | "info" }> = [];
     if (connection === "offline") rows.push({ key: "offline", label: "部分数据源不可用，页面保留最近成功数据", tone: "warning" });
@@ -842,7 +859,7 @@ export function StockTerminal() {
       <section className="market-strip" aria-label="市场脉搏">
         <div className="strip-label"><i aria-hidden="true" /> 市场脉搏</div>
         {indexStocks.length ? indexStocks.map((quote) => (
-          <button type="button" key={keyOf(quote)} className="ticker" onClick={() => { setPage("watch"); setActiveKey(keyOf(quote)); }}>
+          <button type="button" key={keyOf(quote)} className="ticker" onClick={() => selectStock(keyOf(quote))}>
             <span>{quote.name}</span><strong>{number(quote.price)}</strong><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em>
           </button>
         )) : <span className="strip-loading">正在连接行情源…</span>}
@@ -855,7 +872,7 @@ export function StockTerminal() {
 
       {alerts.length > 0 && <section className="alert-tape" aria-label="行情异常提醒">
         <strong>提醒</strong>
-        <div>{alerts.map((item) => <button type="button" key={item.key} className={item.tone} onClick={() => { if (item.stockKey) { setPage("watch"); setActiveKey(item.stockKey); } }}><i aria-hidden="true" />{item.label}</button>)}</div>
+        <div>{alerts.map((item) => <button type="button" key={item.key} className={item.tone} onClick={() => { if (item.stockKey) selectStock(item.stockKey); }}><i aria-hidden="true" />{item.label}</button>)}</div>
       </section>}
 
       {page === "watch" && <div className="watch-layout" id="main-content">
@@ -870,7 +887,7 @@ export function StockTerminal() {
               const key = keyOf(stock); const quote = quotes[key];
               return <div key={key} draggable={watchSort === "manual"} onDragStart={() => { if (watchSort === "manual") dragged.current = key; }} onDragOver={(event) => { if (watchSort === "manual") event.preventDefault(); }} onDrop={() => { if (watchSort === "manual") dropOn(key); }}
                 className={`watch-row ${activeKey === key ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
-                <button type="button" className="watch-select" aria-pressed={activeKey === key} onClick={() => setActiveKey(key)}>
+                <button type="button" className="watch-select" data-stock-key={key} aria-pressed={activeKey === key} onClick={() => selectStock(key)}>
                   <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small><span>{stock.code}</span><em>{marketLabel(stock.market)}</em>{quote?.limitState && quote.sealedAmount ? <b className={`limit-badge ${quote.limitState}`}>{quote.limitState === "up" ? "涨停" : "跌停"}封单 {amount(quote.sealedAmount)}</b> : null}</small></span>
                   <span className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></span>
                   <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
@@ -886,7 +903,7 @@ export function StockTerminal() {
         <main className="research-main">
           <section className="quote-hero panel">
             {activeQuote ? <>
-              <div className="quote-heading"><div className="quote-symbol"><span>{marketLabel(activeQuote.market)}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><DataStamp meta={detail?.meta || feedStates.detail} label="个股详情" compact /></div>
+              <div className="quote-heading"><div className="quote-symbol"><span>{marketLabel(activeQuote.market)}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><DataStamp meta={activeDetail?.meta || feedStates.detail} label="个股详情" compact /></div>
               <div className="price-cluster"><strong className={tone(activeQuote.changePercent)}>{number(activeQuote.price)}</strong><div className={tone(activeQuote.changePercent)}><span>{signed(activeQuote.changePercent)}</span><small>较前收 {number(activeQuote.prevClose)}</small></div></div>
               <div className="metric-grid">
                 {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
@@ -896,13 +913,13 @@ export function StockTerminal() {
 
           <section className="chart-panel panel">
             <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "分时增量约5秒 · 重点行情约2秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
-            <MarketChart detail={detail} mode={chartMode} />
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "分时增量约2秒 · 重点行情约1秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
+            <MarketChart key={activeKey} detail={activeDetail} mode={chartMode} />
           </section>
         </main>
 
         <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
-          <section className="panel pulse-card"><div className="section-head compact"><div><span>MARKET PULSE</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => setActiveKey(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
+          <section className="panel pulse-card"><div className="section-head compact"><div><span>MARKET PULSE</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => selectStock(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
           <section className="panel reliability-card"><div className="section-head compact"><div><span>DATA HEALTH</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "A" : connection === "stale" ? "B" : connection === "offline" ? "C" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
           <section className="panel note-card"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>Ctrl + / 搜索 · 1/2 页面 · Space 暂停</kbd></section>
         </aside>

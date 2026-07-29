@@ -55,6 +55,9 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /autoComplete="off"/);
   assert.match(terminal, /role="img"/);
   assert.match(terminal, /涨停" : "跌停"}封单/);
+  assert.match(terminal, /data-stock-key={key}/);
+  assert.match(terminal, /keyOf\(detail\.quote\) === activeKey/);
+  assert.match(terminal, /分时增量约2秒 · 重点行情约1秒/);
   assert.match(css, /--font-data:/);
   assert.match(css, /\.limit-badge\.up/);
   assert.match(css, /\.limit-badge\.down/);
