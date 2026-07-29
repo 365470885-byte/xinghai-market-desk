@@ -40,12 +40,13 @@ test("server-renders the market research desk", async () => {
 });
 
 test("keeps the visual and accessibility safeguards in source", async () => {
-  const [page, layout, terminal, css, marketRoute, vercelConfig] = await Promise.all([
+  const [page, layout, terminal, css, marketRoute, specialRoute, vercelConfig] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/terminal.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/api/market/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/special/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../vercel.json", import.meta.url), "utf8"),
   ]);
 
@@ -69,7 +70,8 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(marketRoute, /https:\/\/web\.sqt\.gtimg\.cn\/q=/);
   assert.match(marketRoute, /appstock\/app\/minute\/query/);
   assert.match(marketRoute, /loadEastmoneyQuotes\(missingAShares\)/);
-  assert.deepEqual(JSON.parse(vercelConfig).regions, ["hkg1"]);
+  assert.match(specialRoute, /preferredRegion = "iad1"/);
+  assert.equal(JSON.parse(vercelConfig).regions, undefined);
   assert.match(css, /--font-data:/);
   assert.match(css, /\.limit-badge\.up/);
   assert.match(css, /\.limit-badge\.down/);

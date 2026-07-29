@@ -1,6 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "npx next build",
-  "regions": ["hkg1"]
+  "buildCommand": "npx next build"
 }
