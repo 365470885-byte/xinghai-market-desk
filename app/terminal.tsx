@@ -79,6 +79,7 @@ const DEFAULT_STOCKS: Stock[] = [
 const DEFAULT_PINNED = ["101.CNOW", "102.883421", "102.883418", "1.000001", "102.883958", "0.399001", "100.KS11"];
 const WATCHLIST_KEY = "xinghai_watchlist_v2";
 const PINNED_KEY = "xinghai_pinned_v2";
+const QUOTES_CACHE_KEY = "xinghai_quotes_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
   sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向",
@@ -437,6 +438,7 @@ export function StockTerminal() {
   const detailBusy = useRef<string | null>(null);
   const speedBusy = useRef(false);
   const turnoverBusy = useRef(false);
+  const priceHistory = useRef<Record<string, Array<{ at: number; price: number }>>>({});
   const searchRef = useRef<HTMLInputElement>(null);
   const detailRef = useRef<Detail | null>(null);
   const quotesRef = useRef<Record<string, Quote>>({});
@@ -447,11 +449,15 @@ export function StockTerminal() {
     try {
       const storedStocks = JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "null");
       const storedPinned = JSON.parse(localStorage.getItem(PINNED_KEY) || "null");
+      const storedQuotes = JSON.parse(localStorage.getItem(QUOTES_CACHE_KEY) || "null");
       if (Array.isArray(storedStocks) && storedStocks.length) {
         setWatchlist(storedStocks);
         setActiveKey(storedStocks.some((stock) => keyOf(stock) === "1.000001") ? "1.000001" : keyOf(storedStocks[0]));
       }
       if (Array.isArray(storedPinned)) setPinned(new Set(storedPinned));
+      if (storedQuotes?.items && typeof storedQuotes.items === "object" && Date.now() - Number(storedQuotes.updatedAt || 0) < 12 * 60 * 60 * 1_000) {
+        setQuotes(storedQuotes.items);
+      }
     } catch { /* Ignore invalid browser storage. */ }
     setHydrated(true);
   }, []);
@@ -461,6 +467,15 @@ export function StockTerminal() {
     localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
     localStorage.setItem(PINNED_KEY, JSON.stringify(Array.from(pinned)));
   }, [hydrated, pinned, watchlist]);
+
+  useEffect(() => {
+    if (!hydrated || !Object.keys(quotes).length) return;
+    const timer = window.setTimeout(() => {
+      try { localStorage.setItem(QUOTES_CACHE_KEY, JSON.stringify({ updatedAt: Date.now(), items: quotes })); }
+      catch { /* Storage pressure must not interrupt live quotes. */ }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [hydrated, quotes]);
 
   const displayedStocks = useMemo(() => {
     const order = (rows: Stock[]) => watchSort === "manual" ? rows : [...rows].sort((a, b) => {
@@ -528,6 +543,33 @@ export function StockTerminal() {
   useEffect(() => { speedsRef.current = speeds4m; }, [speeds4m]);
   useEffect(() => { turnoverRef.current = marketTurnover; }, [marketTurnover]);
 
+  const updateRollingSpeeds = useCallback((items: Quote[]) => {
+    const now = Date.now();
+    const cutoff = now - 5 * 60_000;
+    const target = now - 4 * 60_000;
+    const updates: Record<string, number> = {};
+    items.forEach((item) => {
+      if (item.price === null || !Number.isFinite(item.price) || item.price <= 0) return;
+      const key = keyOf(item);
+      const rows = (priceHistory.current[key] || []).filter((point) => point.at >= cutoff);
+      const last = rows.at(-1);
+      if (!last || last.price !== item.price || now - last.at >= 1_000) rows.push({ at: now, price: item.price });
+      priceHistory.current[key] = rows;
+      let reference: { at: number; price: number } | undefined;
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        if (rows[index].at <= target) { reference = rows[index]; break; }
+      }
+      const age = reference ? now - reference.at : 0;
+      if (reference && age >= 210_000 && age <= 300_000 && reference.price > 0) {
+        updates[key] = ((item.price - reference.price) / reference.price) * 100;
+      }
+    });
+    if (Object.keys(updates).length) {
+      setSpeeds4m((current) => ({ ...current, ...updates }));
+      updateConnection({ mode: "live", updatedAt: now, source: "连续报价滚动计算" }, "speeds");
+    }
+  }, [updateConnection]);
+
   const refreshQuotes = useCallback(async (silent = false, scope: "all" | "priority" | "overseas" = "all") => {
     if (!watchlist.length) return;
     if (silent && quoteBusy.current[scope]) return;
@@ -545,6 +587,7 @@ export function StockTerminal() {
       const secids = requestedStocks.map(keyOf).join(",");
       const data = await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(secids)}`);
       if (requestId !== quoteRequest.current[scope]) return;
+      updateRollingSpeeds(data.items);
       setQuotes((current) => {
         const next = { ...current };
         data.items.forEach((item) => {
@@ -563,7 +606,7 @@ export function StockTerminal() {
       if (requestId === quoteRequest.current[scope]) quoteBusy.current[scope] = false;
       if (!silent) setRefreshing(false);
     }
-  }, [activeKey, markFeedFailure, pinned, updateConnection, watchlist]);
+  }, [activeKey, markFeedFailure, pinned, updateConnection, updateRollingSpeeds, watchlist]);
 
   useEffect(() => { refreshQuotes(false, "all"); }, [watchlist.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -605,10 +648,10 @@ export function StockTerminal() {
   }, [markFeedFailure, updateConnection, watchlist]);
 
   useEffect(() => {
-    const initial = window.setTimeout(refreshSpeeds, 2_500);
+    const initial = window.setTimeout(refreshSpeeds, 1_500);
     const timer = window.setInterval(() => {
       if (!pollingPaused && document.visibilityState === "visible") refreshSpeeds();
-    }, isAShareTrading() ? 6_000 : 20_000);
+    }, isAShareTrading() ? 60_000 : 120_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, [pollingPaused, refreshSpeeds]);
 
@@ -635,14 +678,16 @@ export function StockTerminal() {
     const stock = watchlist.find((item) => keyOf(item) === activeKey) || watchlist[0];
     if (!stock) { setDetail(null); return; }
     const stockKey = keyOf(stock);
-    if (silent && detailBusy.current === stockKey) return;
+    if (detailBusy.current === stockKey) return;
     const requestId = ++detailRequest.current;
     detailBusy.current = stockKey;
     try {
       const previous = detailRef.current;
-      const canDelta = silent && previous && keyOf(previous.quote) === stockKey;
-      const since = canDelta ? previous.trends.at(-1)?.time || "" : "";
-      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=${canDelta ? "0" : "1"}&since=${encodeURIComponent(since)}`);
+      const sameStock = Boolean(previous && keyOf(previous.quote) === stockKey);
+      const includeKline = chartMode === "day" && (!sameStock || !previous?.klines.length);
+      const canDelta = Boolean(silent && sameStock && !includeKline);
+      const since = canDelta ? previous?.trends.at(-1)?.time || "" : "";
+      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=${includeKline ? "1" : "0"}&since=${encodeURIComponent(since)}`);
       if (requestId !== detailRequest.current) return;
       setDetail((current) => {
         if (!canDelta || !current || keyOf(current.quote) !== stockKey) return data;
@@ -659,7 +704,7 @@ export function StockTerminal() {
     } finally {
       if (requestId === detailRequest.current) detailBusy.current = null;
     }
-  }, [activeKey, markFeedFailure, updateConnection, watchlist]);
+  }, [activeKey, chartMode, markFeedFailure, updateConnection, watchlist]);
 
   useEffect(() => {
     detailRequest.current += 1;
@@ -668,6 +713,11 @@ export function StockTerminal() {
     setDetail(null);
     refreshDetail(false);
   }, [activeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activeKlineCount = activeDetail?.klines.length || 0;
+  useEffect(() => {
+    if (chartMode === "day" && activeKlineCount === 0) refreshDetail(false);
+  }, [activeKey, activeKlineCount, chartMode, refreshDetail]);
 
   useEffect(() => {
     let timer = 0;

@@ -1,5 +1,5 @@
 export const runtime = "nodejs";
-export const preferredRegion = "iad1";
+export const preferredRegion = "hkg1";
 
 type CacheMode = "live" | "cache" | "stale";
 
@@ -476,7 +476,7 @@ async function quotes(secids: string[]) {
     };
   })();
 
-  const eastmoneyPromise: Promise<QuoteBatch> = (async () => {
+  const loadEastmoneyQuotes = async (): Promise<QuoteBatch> => {
     const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
     const chunks: string[][] = [];
     for (let index = 0; index < secids.length; index += 6) chunks.push(secids.slice(index, index + 6));
@@ -492,7 +492,7 @@ async function quotes(secids: string[]) {
       .map((item: Record<string, unknown>) => parseQuote(item))
       .filter((item: ReturnType<typeof parseQuote>) => item.code));
     return { items, results, source: "东方财富" };
-  })();
+  };
 
   const requireComplete = (promise: Promise<QuoteBatch>) => promise.then((batch) => {
     const keys = new Set(batch.items.map((item) => `${item.market}.${item.code}`));
@@ -502,8 +502,12 @@ async function quotes(secids: string[]) {
 
   let batch: QuoteBatch;
   try {
-    batch = await Promise.any([requireComplete(sinaPromise), requireComplete(eastmoneyPromise)]);
+    // The domestic Sina batch normally contains the entire watchlist. Only
+    // start the heavier Eastmoney fan-out when the primary result is missing
+    // symbols; eagerly racing both sources created needless congestion.
+    batch = await requireComplete(sinaPromise);
   } catch {
+    const eastmoneyPromise = loadEastmoneyQuotes();
     const partials = await Promise.allSettled([sinaPromise, eastmoneyPromise]);
     const quoteMap = new Map<string, ReturnType<typeof parseQuote>>();
     const results: QuoteBatch["results"] = [];
