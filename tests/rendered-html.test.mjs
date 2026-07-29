@@ -71,7 +71,7 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(marketRoute, /appstock\/app\/minute\/query/);
   assert.match(marketRoute, /loadEastmoneyQuotes\(missingAShares\)/);
   assert.match(specialRoute, /preferredRegion = "iad1"/);
-  assert.equal(JSON.parse(vercelConfig).regions, undefined);
+  assert.deepEqual(JSON.parse(vercelConfig).regions, ["hkg1"]);
   assert.match(css, /--font-data:/);
   assert.match(css, /\.limit-badge\.up/);
   assert.match(css, /\.limit-badge\.down/);

@@ -154,6 +154,145 @@ async function fetchJson<T>(url: string, timeout = 12_000): Promise<T> {
   }
 }
 
+function directSpecialQuote(stock: Stock, data: Record<string, unknown>): Quote {
+  const price = Number(data.price);
+  const prevClose = Number(data.prevClose);
+  const high = Number(data.high);
+  const low = Number(data.low);
+  return {
+    ...stock,
+    price: Number.isFinite(price) ? price : null,
+    prevClose: Number.isFinite(prevClose) ? prevClose : null,
+    open: Number.isFinite(Number(data.open)) ? Number(data.open) : null,
+    high: Number.isFinite(high) ? high : null,
+    low: Number.isFinite(low) ? low : null,
+    volume: Number.isFinite(Number(data.volume)) ? Number(data.volume) : null,
+    amount: Number.isFinite(Number(data.amount)) ? Number(data.amount) : null,
+    changePercent: Number.isFinite(Number(data.changePercent))
+      ? Number(data.changePercent)
+      : Number.isFinite(price) && Number.isFinite(prevClose) && prevClose !== 0
+        ? ((price - prevClose) / prevClose) * 100
+        : null,
+    amplitude: Number.isFinite(high) && Number.isFinite(low) && Number.isFinite(prevClose) && prevClose !== 0
+      ? ((high - low) / prevClose) * 100
+      : null,
+    speed: null,
+    turnover: null,
+    netInflow: null,
+    limitState: null,
+    sealedAmount: null,
+  };
+}
+
+function loadDirectSinaSpecial(stocks: Stock[], timeoutMs = 2_500): Promise<Quote[]> {
+  const globals = window as unknown as Record<string, unknown>;
+  const symbols = stocks.map((stock) => stock.market === 100 ? "b_KOSPI" : "hf_CHA50CFD");
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.charset = "gbk";
+    let done = false;
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      script.remove();
+      symbols.forEach((symbol) => { try { delete globals[`hq_str_${symbol}`]; } catch { /* no-op */ } });
+    };
+    const finish = (action: () => void) => {
+      if (done) return;
+      done = true;
+      action();
+      cleanup();
+    };
+    const timer = window.setTimeout(() => finish(() => reject(new Error("海外指数直连超时"))), timeoutMs);
+    script.onerror = () => finish(() => reject(new Error("海外指数直连失败")));
+    script.onload = () => finish(() => {
+      const items = stocks.map((stock, index) => {
+        const parts = String(globals[`hq_str_${symbols[index]}`] ?? "").split(",");
+        if (!parts[0]) return null;
+        return stock.market === 101
+          ? directSpecialQuote(stock, { price: parts[0], prevClose: parts[7], high: parts[4], low: parts[5], open: parts[8], volume: parts[9] })
+          : directSpecialQuote(stock, { price: parts[1], changePercent: parts[3], open: parts[8], prevClose: parts[9], high: parts[10], low: parts[11], volume: parts[12] });
+      }).filter((item): item is Quote => Boolean(item));
+      if (!items.length) throw new Error("海外指数直连为空");
+      resolve(items);
+    });
+    script.src = `https://hq.sinajs.cn/list=${symbols.join(",")}`;
+    document.head.appendChild(script);
+  });
+}
+
+function loadDirectThsSpecial(stock: Stock, timeoutMs = 2_500): Promise<Quote> {
+  const globals = window as unknown as Record<string, unknown>;
+  const callback = `quotebridge_v2_realhead_48_${stock.code}_last`;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    let done = false;
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      script.remove();
+      try { delete globals[callback]; } catch { /* no-op */ }
+    };
+    const finish = (action: () => void) => {
+      if (done) return;
+      done = true;
+      action();
+      cleanup();
+    };
+    const timer = window.setTimeout(() => finish(() => reject(new Error("同花顺指数直连超时"))), timeoutMs);
+    script.onerror = () => finish(() => reject(new Error("同花顺指数直连失败")));
+    globals[callback] = (payload: { items?: Record<string, unknown> }) => finish(() => {
+      const row = payload?.items ?? {};
+      resolve(directSpecialQuote(stock, {
+        price: row["10"], prevClose: row["6"], open: row["7"], high: row["8"], low: row["9"],
+        volume: row["13"], amount: row["19"],
+      }));
+    });
+    script.src = `https://d.10jqka.com.cn/v2/realhead/48_${stock.code}/last.js`;
+    document.head.appendChild(script);
+  });
+}
+
+async function fetchDirectSpecialQuotes(stocks: Stock[]) {
+  const legacy = stocks.filter((stock) => stock.market === 100 || stock.market === 101);
+  const tasks: Array<Promise<Quote[]>> = [];
+  if (legacy.length) tasks.push(loadDirectSinaSpecial(legacy));
+  stocks.filter((stock) => stock.market === 102).forEach((stock) => tasks.push(loadDirectThsSpecial(stock).then((item) => [item])));
+  const settled = await Promise.allSettled(tasks);
+  const items = settled.flatMap((entry) => entry.status === "fulfilled" ? entry.value : []);
+  if (!items.length) throw new Error("特殊指数直连失败");
+  return {
+    items,
+    meta: { mode: items.length === stocks.length ? "live" : "stale", updatedAt: Date.now(), source: "浏览器直连行情" } as MarketMeta,
+  };
+}
+
+async function fetchSpecialQuotes(stocks: Stock[]) {
+  const direct = await fetchDirectSpecialQuotes(stocks).catch(() => ({
+    items: [] as Quote[],
+    meta: { mode: "offline", updatedAt: 0, source: "浏览器直连失败" } as MarketMeta,
+  }));
+  if (direct.items.length === stocks.length) return direct;
+  try {
+    const secids = stocks.map(keyOf).join(",");
+    const remote = await fetchJson<{ items: Quote[]; meta: MarketMeta }>(
+      `https://xinghai-special-feed.vercel.app/api/special?secids=${encodeURIComponent(secids)}`,
+      6_000,
+    );
+    const merged = new Map(remote.items.map((item) => [keyOf(item), item]));
+    direct.items.forEach((item) => merged.set(keyOf(item), item));
+    return {
+      items: stocks.map((stock) => merged.get(keyOf(stock))).filter((item): item is Quote => Boolean(item)),
+      meta: {
+        mode: merged.size >= stocks.length ? "live" : "stale",
+        updatedAt: Math.max(direct.meta.updatedAt, remote.meta.updatedAt),
+        source: direct.items.length ? "浏览器直连 + 备用指数源" : remote.meta.source,
+      } as MarketMeta,
+    };
+  } catch (error) {
+    if (direct.items.length) return direct;
+    throw error;
+  }
+}
+
 function useCanvas(draw: (ctx: CanvasRenderingContext2D, width: number, height: number) => void, dependencies: unknown[]) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -586,8 +725,9 @@ export function StockTerminal() {
       if (scope === "overseas") requestedStocks.push(...watchlist.filter((stock) => stock.market === 102));
       if (!requestedStocks.length) return;
       const secids = requestedStocks.map(keyOf).join(",");
-      const endpoint = scope === "overseas" ? "/api/special?" : "/api/market?action=quotes&";
-      const data = await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`${endpoint}secids=${encodeURIComponent(secids)}`);
+      const data = scope === "overseas"
+        ? await fetchSpecialQuotes(requestedStocks)
+        : await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(secids)}`);
       if (requestId !== quoteRequest.current[scope]) return;
       updateRollingSpeeds(data.items);
       setQuotes((current) => {

@@ -129,8 +129,9 @@ function parseThs(textValue: string, secid: string) {
 }
 
 export async function GET(request: Request) {
+  const headers = { "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" };
   const secids = normalizeSecids(new URL(request.url).searchParams.get("secids"));
-  if (!secids.length) return Response.json({ items: [], meta: { mode: "live", updatedAt: Date.now(), source: "特殊指数" } });
+  if (!secids.length) return Response.json({ items: [], meta: { mode: "live", updatedAt: Date.now(), source: "特殊指数" } }, { headers });
   const tasks: Array<Promise<Quote[]>> = [];
   const sinaSecids = secids.filter((secid) => secid.startsWith("100.") || secid.startsWith("101."));
   if (sinaSecids.length) {
@@ -143,7 +144,7 @@ export async function GET(request: Request) {
   });
   const settled = await Promise.allSettled(tasks);
   const items = settled.flatMap((entry) => entry.status === "fulfilled" ? entry.value : []);
-  if (!items.length) return Response.json({ error: "特殊指数暂时无法连接" }, { status: 502 });
+  if (!items.length) return Response.json({ error: "特殊指数暂时无法连接" }, { status: 502, headers });
   const itemMap = new Map(items.map((item) => [`${item.market}.${item.code}`, item]));
   const ordered = secids.map((secid) => itemMap.get(secid)).filter((item): item is Quote => Boolean(item));
   return Response.json({
@@ -153,5 +154,5 @@ export async function GET(request: Request) {
       updatedAt: Date.now(),
       source: "新浪行情 + 同花顺",
     },
-  }, { headers: { "Cache-Control": "no-store" } });
+  }, { headers });
 }
