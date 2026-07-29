@@ -579,13 +579,15 @@ export function StockTerminal() {
     try {
       const priorityKeys = new Set([activeKey, "1.000001", "0.399001", ...Array.from(pinned)]);
       const requestedStocks = scope === "all"
-        ? watchlist
+        ? watchlist.filter((stock) => stock.market === 0 || stock.market === 1)
         : scope === "overseas"
           ? watchlist.filter((stock) => stock.market === 100 || stock.market === 101)
           : watchlist.filter((stock) => priorityKeys.has(keyOf(stock))).slice(0, 14);
+      if (scope === "overseas") requestedStocks.push(...watchlist.filter((stock) => stock.market === 102));
       if (!requestedStocks.length) return;
       const secids = requestedStocks.map(keyOf).join(",");
-      const data = await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(secids)}`);
+      const endpoint = scope === "overseas" ? "/api/special?" : "/api/market?action=quotes&";
+      const data = await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`${endpoint}secids=${encodeURIComponent(secids)}`);
       if (requestId !== quoteRequest.current[scope]) return;
       updateRollingSpeeds(data.items);
       setQuotes((current) => {
@@ -599,8 +601,8 @@ export function StockTerminal() {
       updateConnection(data.meta, "quotes");
     } catch (error) {
       if (requestId === quoteRequest.current[scope]) {
-        markFeedFailure("quotes", Object.keys(quotesRef.current).length > 0);
-        if (!silent) setNotice(error instanceof Error ? error.message : "刷新失败");
+        if (scope !== "overseas") markFeedFailure("quotes", Object.keys(quotesRef.current).length > 0);
+        if (!silent && scope !== "overseas") setNotice(error instanceof Error ? error.message : "刷新失败");
       }
     } finally {
       if (requestId === quoteRequest.current[scope]) quoteBusy.current[scope] = false;
@@ -608,16 +610,29 @@ export function StockTerminal() {
     }
   }, [activeKey, markFeedFailure, pinned, updateConnection, updateRollingSpeeds, watchlist]);
 
-  useEffect(() => { refreshQuotes(false, "all"); }, [watchlist.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    refreshQuotes(false, "all");
+    refreshQuotes(true, "overseas");
+  }, [watchlist.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let timer = 0;
     const poll = async () => {
       const trading = isAShareTrading();
-      if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "overseas");
+      if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "all");
       timer = window.setTimeout(poll, trading ? 1_000 : 5_000);
     };
     timer = window.setTimeout(poll, isAShareTrading() ? 1_000 : 5_000);
+    return () => window.clearTimeout(timer);
+  }, [pollingPaused, refreshQuotes]);
+
+  useEffect(() => {
+    let timer = 0;
+    const pollSpecial = async () => {
+      if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, "overseas");
+      timer = window.setTimeout(pollSpecial, isAShareTrading() ? 10_000 : 5_000);
+    };
+    timer = window.setTimeout(pollSpecial, 2_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
