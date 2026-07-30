@@ -60,7 +60,9 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /涨停" : "跌停"}封单/);
   assert.match(terminal, /data-stock-key={key}/);
   assert.match(terminal, /keyOf\(detail\.quote\) === activeKey/);
-  assert.match(terminal, /分时增量约2秒 · 重点行情约1秒/);
+  assert.match(terminal, /新增分时节点时更新 · 重点行情约1秒/);
+  assert.match(terminal, /setChartDetail\(activeDetail\)/);
+  assert.doesNotMatch(terminal, />(?:MARKET INTELLIGENCE|WATCHLIST|PRICE ACTION|MARKET PULSE|DATA HEALTH|INTRADAY MAIN FLOW|SECTOR FLOW|TOP 5)</);
   assert.match(terminal, /QUOTES_CACHE_KEY/);
   assert.match(terminal, /连续报价滚动计算/);
   assert.match(terminal, /没有找到匹配的沪深股票/);
@@ -76,6 +78,7 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(specialRoute, /preferredRegion = "iad1"/);
   assert.deepEqual(JSON.parse(vercelConfig).regions, ["hkg1"]);
   assert.match(css, /--font-data:/);
+  assert.match(css, /resize:\s*both/);
   assert.match(css, /\.limit-badge\.up/);
   assert.match(css, /\.limit-badge\.down/);
   assert.match(css, /font-variant-numeric:\s*tabular-nums/);

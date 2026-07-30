@@ -896,7 +896,7 @@ async function fourMinuteSpeeds(secids: string[]) {
     meta: {
       ...meta,
       mode: ordered.length < secids.length ? "stale" as CacheMode : meta.mode,
-      source: ["腾讯分时", usedYahoo ? "Yahoo Finance" : "", usedEastmoney ? "东方财富" : ""].filter(Boolean).join(" + "),
+      source: ["腾讯分时", usedYahoo ? "雅虎财经" : "", usedEastmoney ? "东方财富" : ""].filter(Boolean).join(" + "),
     },
   };
 }

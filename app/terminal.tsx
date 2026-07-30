@@ -86,7 +86,6 @@ const FEED_LABELS: Record<FeedKey, string> = {
 };
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
-const marketLabel = (market: number) => market === 1 ? "SH" : market === 0 ? "SZ" : market === 100 ? "KR" : market === 101 ? "FT" : "THS";
 const marketDescription = (market: number) => market === 100 ? "韩国交易所" : market === 101 ? "富时中国A50期货" : market === 102 ? "同花顺特色指数" : "人民币普通股";
 const signed = (value: number | null | undefined, suffix = "%") => value === null || value === undefined || !Number.isFinite(value) ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}${suffix}`;
 const relativePercent = (value: number | null | undefined, base: number | null | undefined) =>
@@ -132,10 +131,11 @@ function DataStamp({ meta, label, compact = false }: { meta: MarketMeta | null |
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
-  return <div className={`data-stamp ${meta?.mode || "offline"} ${compact ? "compact" : ""}`} title={`${label}｜${meta?.source || "尚未连接"}｜${feedAge(meta?.updatedAt, now)}`}>
+  const source = meta?.source || "尚未连接";
+  return <div className={`data-stamp ${meta?.mode || "offline"} ${compact ? "compact" : ""}`} title={`${label}｜${source}｜${feedAge(meta?.updatedAt, now)}`}>
     <i aria-hidden="true" />
     <span>{label}</span>
-    <b>{meta?.source || "尚未连接"}</b>
+    <b>{source}</b>
     <time>{shortTime(meta?.updatedAt)}</time>
     <em>{meta ? `${feedModeLabel(meta.mode)} · ${feedAge(meta.updatedAt, now)}` : "等待数据"}</em>
   </div>;
@@ -557,6 +557,7 @@ export function StockTerminal() {
   const [speeds4m, setSpeeds4m] = useState<Record<string, number>>({});
   const [marketTurnover, setMarketTurnover] = useState<MarketTurnover | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
+  const [chartDetail, setChartDetail] = useState<Detail | null>(null);
   const [chartMode, setChartMode] = useState<ChartMode>("time");
   const [feedStates, setFeedStates] = useState<Partial<Record<FeedKey, FeedSnapshot>>>({});
   const [refreshing, setRefreshing] = useState(false);
@@ -581,6 +582,7 @@ export function StockTerminal() {
   const priceHistory = useRef<Record<string, Array<{ at: number; price: number }>>>({});
   const searchRef = useRef<HTMLInputElement>(null);
   const detailRef = useRef<Detail | null>(null);
+  const chartSignature = useRef("");
   const quotesRef = useRef<Record<string, Quote>>({});
   const speedsRef = useRef<Record<string, number>>({});
   const turnoverRef = useRef<MarketTurnover | null>(null);
@@ -632,6 +634,23 @@ export function StockTerminal() {
   const activeStock = watchlist.find((stock) => keyOf(stock) === activeKey) || watchlist[0] || null;
   const activeDetail = detail && keyOf(detail.quote) === activeKey ? detail : null;
   const activeQuote = activeDetail?.quote || (activeStock ? quotes[keyOf(activeStock)] : null);
+
+  useEffect(() => {
+    chartSignature.current = "";
+    setChartDetail(null);
+  }, [activeKey, chartMode]);
+
+  useEffect(() => {
+    if (!activeDetail) return;
+    const rows = chartMode === "time" ? activeDetail.trends : activeDetail.klines;
+    if (!rows.length) return;
+    const lastPoint = rows[rows.length - 1];
+    const pointKey = chartMode === "time" ? (lastPoint as Trend).time : (lastPoint as Kline).date;
+    const signature = `${activeKey}|${chartMode}|${rows.length}|${pointKey}`;
+    if (chartSignature.current === signature) return;
+    chartSignature.current = signature;
+    setChartDetail(activeDetail);
+  }, [activeDetail, activeKey, chartMode]);
 
   const selectStock = useCallback((key: string) => {
     if (!key) return;
@@ -1021,9 +1040,10 @@ export function StockTerminal() {
   }, [activeKey, displayedStocks, selectStock]);
 
   const indexStocks = [quotes["1.000001"], quotes["0.399001"], quotes["100.KS11"]].filter(Boolean);
+  const visibleChartDetail = chartDetail && keyOf(chartDetail.quote) === activeKey ? chartDetail : null;
   const chartLastPoint = chartMode === "time"
-    ? activeDetail?.trends.at(-1)?.time?.split(" ").at(-1)?.slice(0, 8)
-    : activeDetail?.klines.at(-1)?.date;
+    ? visibleChartDetail?.trends.at(-1)?.time?.split(" ").at(-1)?.slice(0, 8)
+    : visibleChartDetail?.klines.at(-1)?.date;
   const alerts = useMemo(() => {
     const rows: Array<{ key: string; label: string; stockKey?: string; tone: "warning" | "info" }> = [];
     if (connection === "offline") rows.push({ key: "offline", label: "部分数据源不可用，页面保留最近成功数据", tone: "warning" });
@@ -1043,7 +1063,7 @@ export function StockTerminal() {
       <header className="topbar">
         <div className="brand-block">
           <div className="brand-mark" aria-hidden="true"><span />〈</div>
-          <div><strong>星辰大海</strong><small>MARKET INTELLIGENCE</small></div>
+          <div><strong>星辰大海</strong><small>行情研究台</small></div>
         </div>
         <nav className="main-tabs" aria-label="主要页面">
           {([ ["watch", "自选行情"], ["capital", "资金流向"] ] as Array<[PageKey, string]>).map(([key, label]) => (
@@ -1058,16 +1078,16 @@ export function StockTerminal() {
           </div>
           <form className="search" role="search" onSubmit={submitSearch}>
             <span className="search-icon" aria-hidden="true">⌕</span>
-            <input ref={searchRef} name="stock-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => { setQuery(event.target.value); setSuggestionIndex(0); setSearchMessage(""); }} onKeyDown={handleSearchKeyDown} placeholder="股票名称 / 代码…" aria-label="搜索股票，Control 加斜杠快速聚焦" aria-activedescendant={suggestions[suggestionIndex] ? `suggest-${keyOf(suggestions[suggestionIndex])}` : undefined} />
+            <input ref={searchRef} name="stock-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => { setQuery(event.target.value); setSuggestionIndex(0); setSearchMessage(""); }} onKeyDown={handleSearchKeyDown} placeholder="股票名称 / 代码…" aria-label="搜索股票，控制键加斜杠快速聚焦" aria-activedescendant={suggestions[suggestionIndex] ? `suggest-${keyOf(suggestions[suggestionIndex])}` : undefined} />
             {query && <button type="button" className="search-clear" aria-label="清空股票搜索" onClick={() => { setQuery(""); setSuggestions([]); setSearchMessage(""); }}>×</button>}
             {(searching || suggestions.length > 0 || searchMessage) && <div className="suggestions" aria-live="polite">
               {searching && <div className="suggest-status">正在检索市场…</div>}
               {!searching && searchMessage && <div className="suggest-status">{searchMessage}</div>}
               {!searching && suggestions.map((stock, index) => <button type="button" id={`suggest-${keyOf(stock)}`} className={suggestionIndex === index ? "active" : ""} key={keyOf(stock)} onMouseEnter={() => setSuggestionIndex(index)} onClick={() => addStock(stock)}><span><strong>{stock.name}</strong><small>{stock.code}</small></span><em>{stock.market === 1 ? "沪市" : "深市"}</em></button>)}
-              {!searching && <div className="search-shortcuts"><span>↑↓ 选择</span><span>Enter 添加</span><span>Esc 关闭</span></div>}
+              {!searching && <div className="search-shortcuts"><span>↑↓ 选择</span><span>回车添加</span><span>退出键关闭</span></div>}
             </div>}
           </form>
-          <button type="button" className={`pause-button ${pollingPaused ? "active" : ""}`} onClick={() => setPollingPaused((current) => !current)} aria-pressed={pollingPaused} title="Space 暂停或恢复自动刷新">{pollingPaused ? "继续" : "暂停"}</button>
+          <button type="button" className={`pause-button ${pollingPaused ? "active" : ""}`} onClick={() => setPollingPaused((current) => !current)} aria-pressed={pollingPaused} title="空格键暂停或恢复自动刷新">{pollingPaused ? "继续" : "暂停"}</button>
           <button type="button" className="refresh-button" onClick={refreshAll} disabled={refreshing} aria-label="立即刷新行情与分时图"><span className={refreshing ? "spin" : ""} aria-hidden="true">↻</span><b>刷新</b></button>
         </div>
       </header>
@@ -1092,8 +1112,8 @@ export function StockTerminal() {
       </section>}
 
       {page === "watch" && <div className="watch-layout" id="main-content">
-        <aside className={`watch-sidebar panel ${compactList ? "compact-list" : ""}`}>
-          <div className="panel-title"><div><span>WATCHLIST</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
+        <aside className={`watch-sidebar panel ${compactList ? "compact-list" : ""}`} title="拖动右下角可调整宽高">
+          <div className="panel-title"><div><span>自选列表</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
           <div className="watch-columns"><span>名称 / 代码</span><span>最新 / 涨幅</span><span>4分涨速</span></div>
           <div className="watch-sortbar" aria-label="自选股临时排序">
             {([ ["manual", "手动"], ["change", "涨幅"], ["speed", "4分"], ["amount", "成交额"] ] as Array<[WatchSort, string]>).map(([key, label]) => <button type="button" key={key} className={watchSort === key ? "active" : ""} aria-pressed={watchSort === key} onClick={() => setWatchSort(key)}>{label}</button>)}
@@ -1104,7 +1124,7 @@ export function StockTerminal() {
               return <div key={key} draggable={watchSort === "manual"} onDragStart={() => { if (watchSort === "manual") dragged.current = key; }} onDragOver={(event) => { if (watchSort === "manual") event.preventDefault(); }} onDrop={() => { if (watchSort === "manual") dropOn(key); }}
                 className={`watch-row ${activeKey === key ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
                 <button type="button" className="watch-select" data-stock-key={key} aria-pressed={activeKey === key} onClick={() => selectStock(key)}>
-                  <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small><span>{stock.code}</span><em>{marketLabel(stock.market)}</em>{quote?.limitState && quote.sealedAmount ? <b className={`limit-badge ${quote.limitState}`}>{quote.limitState === "up" ? "涨停" : "跌停"}封单 {amount(quote.sealedAmount)}</b> : null}</small></span>
+                  <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small><span>{stock.code}</span>{quote?.limitState && quote.sealedAmount ? <b className={`limit-badge ${quote.limitState}`}>{quote.limitState === "up" ? "涨停" : "跌停"}封单 {amount(quote.sealedAmount)}</b> : null}</small></span>
                   <span className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></span>
                   <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
                 </button>
@@ -1113,13 +1133,13 @@ export function StockTerminal() {
             })}
             {!watchlist.length && <EmptyState title="自选列表为空" detail="在顶部搜索并添加股票" />}
           </div>
-          <div className="sidebar-hint"><span>{watchSort === "manual" ? "拖动排序 · 右键管理" : "临时排序 · 手动顺序已保留"}</span><span>J/K 切换</span></div>
+          <div className="sidebar-hint"><span>{watchSort === "manual" ? "拖动排序 · 右键管理" : "临时排序 · 手动顺序已保留"}</span><span>右下角可缩放</span></div>
         </aside>
 
         <main className="research-main">
-          <section className="quote-hero panel">
+          <section className="quote-hero panel" title="拖动右下角可调整宽高">
             {activeQuote ? <>
-              <div className="quote-heading"><div className="quote-symbol"><span>{marketLabel(activeQuote.market)}</span><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><DataStamp meta={activeDetail?.meta || feedStates.detail} label="个股详情" compact /></div>
+              <div className="quote-heading"><div className="quote-symbol"><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><DataStamp meta={activeDetail?.meta || feedStates.detail} label="个股详情" compact /></div>
               <div className="price-cluster"><strong className={tone(activeQuote.changePercent)}>{number(activeQuote.price)}</strong><div className={tone(activeQuote.changePercent)}><span>{signed(activeQuote.changePercent)}</span><small>较前收 {number(activeQuote.prevClose)}</small></div></div>
               <div className="metric-grid">
                 {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
@@ -1127,17 +1147,17 @@ export function StockTerminal() {
             </> : <div className="hero-loading" role="status" aria-label="正在加载个股行情"><div /><div /><div /></div>}
           </section>
 
-          <section className="chart-panel panel">
-            <div className="section-head"><div><span>PRICE ACTION</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "分时增量约2秒 · 重点行情约1秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
-            <MarketChart key={activeKey} detail={activeDetail} mode={chartMode} />
+          <section className="chart-panel panel" title="拖动右下角可调整宽高">
+            <div className="section-head"><div><span>行情走势</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "新增分时节点时更新 · 重点行情约1秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
+            <MarketChart key={`${activeKey}-${chartMode}`} detail={visibleChartDetail} mode={chartMode} />
           </section>
         </main>
 
         <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
-          <section className="panel pulse-card"><div className="section-head compact"><div><span>MARKET PULSE</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => selectStock(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
-          <section className="panel reliability-card"><div className="section-head compact"><div><span>DATA HEALTH</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "A" : connection === "stale" ? "B" : connection === "offline" ? "C" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
-          <section className="panel note-card"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>Ctrl + / 搜索 · 1/2 页面 · Space 暂停</kbd></section>
+          <section className="panel pulse-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>市场快照</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => selectStock(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
+          <section className="panel reliability-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>数据状态</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "优" : connection === "stale" ? "缓" : connection === "offline" ? "断" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
+          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键切换页面 · 空格键暂停</kbd></section>
         </aside>
       </div>}
 
@@ -1235,7 +1255,7 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
 
   return <div className="sector-layout" id="main-content">
     <aside className="sector-sidebar panel">
-      <div className="panel-title"><div><span>SECTOR RADAR</span><strong>板块强弱</strong></div><em>{sectors.length}</em></div>
+      <div className="panel-title"><div><span>板块列表</span><strong>板块强弱</strong></div><em>{sectors.length}</em></div>
       <div className="segmented"><button type="button" aria-pressed={type === "concept"} className={type === "concept" ? "active" : ""} onClick={() => setType("concept")}>概念板块</button><button type="button" aria-pressed={type === "industry"} className={type === "industry" ? "active" : ""} onClick={() => setType("industry")}>行业板块</button></div>
       <DataStamp meta={sectorMeta} label="板块列表" compact />
       <div className={`sector-data-state ${validMetricCount ? "available" : "classification-only"}`}><strong>{validMetricCount ? `${validMetricCount}/${sectors.length} 个板块有实时指标` : "板块行情暂不可用"}</strong><span>{validMetricCount ? "排序只基于有效行情" : "当前仅显示行业分类缓存，排序已停用"}</span></div>
@@ -1243,7 +1263,7 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
       <div className="sector-list" aria-label="板块列表">{loading ? <LoadingRows count={10} /> : error ? <EmptyState title="板块连接失败" detail={error} /> : !sortedSectors.length ? <EmptyState title="暂无可用板块" detail="实时分类数据正在恢复" /> : sortedSectors.map((sector, index) => <button type="button" key={sector.code} aria-pressed={active?.code === sector.code} className={active?.code === sector.code ? "active" : ""} onClick={() => setActive(sector)}><em>{String(index + 1).padStart(2, "0")}</em><span><strong>{sector.name}</strong><small>{Number.isFinite(sector.inflow) ? amount(sector.inflow) : "仅分类"}</small></span><b className={tone(sector.change)}>{signed(sector.change)}</b></button>)}</div>
     </aside>
     <main className="sector-main panel">
-      <div className="sector-hero"><div><span>{type === "concept" ? "CONCEPT" : "INDUSTRY"} / {active?.code || "—"}</span><h1>{active?.name || "选择一个板块"}</h1><p>{type === "industry" ? "参考同花顺行业分类 · 已合并重复层级" : "参考同花顺概念分类 · 已排除涨停、新高等行情标签"}</p></div>{active && <div className="sector-stat"><span>板块涨幅</span><strong className={tone(active.change)}>{Number.isFinite(active.change) ? signed(active.change) : "行情待恢复"}</strong><em>净流入 {amount(active.inflow)}</em></div>}</div>
+      <div className="sector-hero"><div><span>{type === "concept" ? "概念板块" : "行业板块"} · {active?.code || "—"}</span><h1>{active?.name || "选择一个板块"}</h1><p>{type === "industry" ? "参考同花顺行业分类 · 已合并重复层级" : "参考同花顺概念分类 · 已排除涨停、新高等行情标签"}</p></div>{active && <div className="sector-stat"><span>板块涨幅</span><strong className={tone(active.change)}>{Number.isFinite(active.change) ? signed(active.change) : "行情待恢复"}</strong><em>净流入 {amount(active.inflow)}</em></div>}</div>
       <div className="table-toolbar"><div><strong>成分股</strong><span>{detailLoading && !stocks.length ? "连接中…" : `${stocks.length} 支`}</span></div><DataStamp meta={detailMeta} label="板块成分" compact /><div className="table-sorts"><button className={stockSort === "change" ? "active" : ""} onClick={() => setStockSort("change")}>涨幅</button><button className={stockSort === "speed" ? "active" : ""} onClick={() => setStockSort("speed")}>涨速</button><button className={stockSort === "inflow" ? "active" : ""} onClick={() => setStockSort("inflow")}>资金</button></div></div>
       <div className="stock-table"><div className="table-head"><span>排名</span><span>股票</span><span>最新价</span><span>涨跌幅</span><span>涨速</span><span>主力净流入</span><span /></div>{detailLoading && !stocks.length ? <LoadingRows count={6} /> : detailError && !stocks.length ? <div className="sector-detail-error"><strong>成分股暂时没有返回</strong><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>立即重试</button></div> : <>{detailError && <div className="sector-cache-note"><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>重新连接</button></div>}{sortedStocks.map((stock, index) => <button className="table-row" key={`${stock.market}.${stock.code}`} onClick={() => onPick(stock)}><span>{String(index + 1).padStart(2, "0")}</span><span><strong>{stock.name}</strong><small>{stock.code}</small></span><span>{number(stock.price)}</span><span className={tone(stock.change)}>{signed(stock.change)}</span><span className={tone(stock.speed)}>{signed(stock.speed)}</span><span className={tone(stock.inflow)}>{amount(stock.inflow)}</span><span>＋自选</span></button>)}</>}</div>
     </main>
@@ -1267,10 +1287,10 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
   if (error && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><EmptyState title="资金流连接失败" detail={error} /><button type="button" className="retry" onClick={load}>重新连接</button></section></div>;
   return <div className="capital-layout" id="main-content">
     <main className="capital-main panel">
-      <div className="capital-hero"><div><span>CAPITAL FLOW / 000300</span><h1>沪深300资金温度</h1><p>主力资金净流入逐分钟累计值</p><DataStamp meta={data?.meta} label="资金流向" compact /></div><div className="capital-price"><small>{data?.quote.name}</small><strong>{number(data?.quote.price)}</strong><em className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</em></div></div>
+      <div className="capital-hero"><div><span>资金流向 · 000300</span><h1>沪深300资金温度</h1><p>主力资金净流入逐分钟累计值</p><DataStamp meta={data?.meta} label="资金流向" compact /></div><div className="capital-price"><small>{data?.quote.name}</small><strong>{number(data?.quote.price)}</strong><em className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</em></div></div>
       <div className="capital-kpis"><div><span>主力净流入</span><strong className={tone(mainNet)}>{amount(mainNet)}</strong><em>当前累计</em></div><div><span>沪深300涨幅</span><strong className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</strong><em>指数表现</em></div><div><span>行情涨速</span><strong className={tone(data?.quote.speed)}>{signed(data?.quote.speed)}</strong><em>短时动量</em></div><div><span>最近同步</span><strong>{shortTime(data?.meta.updatedAt)}</strong><em>{data?.meta.mode === "stale" ? "缓存保护" : "实时数据"}</em></div></div>
-      <div className="flow-card"><div className="section-head"><div><span>INTRADAY MAIN FLOW</span><strong>主力资金轨迹</strong></div><button onClick={load} disabled={loading}>{loading ? "同步中…" : "重新同步"}</button></div><FlowChart rows={data?.flow || []} /></div>
+      <div className="flow-card"><div className="section-head"><div><span>盘中主力资金</span><strong>主力资金轨迹</strong></div><button onClick={load} disabled={loading}>{loading ? "同步中…" : "重新同步"}</button></div><FlowChart rows={data?.flow || []} /></div>
     </main>
-    <aside className="capital-rank panel"><div className="panel-title"><div><span>SECTOR FLOW</span><strong>行业资金榜</strong></div><em>TOP 5</em></div><div className="flow-ranks"><section><div className="rank-title up"><span>▲</span><strong>净流入领先</strong></div>{data?.inflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="up">{amount(item.amount)}</strong></div>)}</section><section><div className="rank-title down"><span>▼</span><strong>净流出领先</strong></div>{data?.outflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="down">{amount(item.amount)}</strong></div>)}</section></div><div className="rank-note"><strong>口径说明</strong><p>主力净流入来自行情源资金流接口；榜单按申万/东财行业板块净额排序，显示当前累计值。</p></div></aside>
+    <aside className="capital-rank panel"><div className="panel-title"><div><span>行业资金</span><strong>行业资金榜</strong></div><em>前5名</em></div><div className="flow-ranks"><section><div className="rank-title up"><span>▲</span><strong>净流入领先</strong></div>{data?.inflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="up">{amount(item.amount)}</strong></div>)}</section><section><div className="rank-title down"><span>▼</span><strong>净流出领先</strong></div>{data?.outflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="down">{amount(item.amount)}</strong></div>)}</section></div><div className="rank-note"><strong>口径说明</strong><p>主力净流入来自行情源资金流接口；榜单按申万/东财行业板块净额排序，显示当前累计值。</p></div></aside>
   </div>;
 }
