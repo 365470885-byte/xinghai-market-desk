@@ -1242,13 +1242,20 @@ async function capital() {
 
 async function search(keyword: string) {
   const normalized = keyword.trim().slice(0, 30);
-  if (!normalized) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "东方财富" } };
-  const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(normalized)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=12`;
-  const result = await resilientJson(url, 60_000);
-  const items = (result.value?.QuotationCodeTable?.Data ?? []).map((item: Record<string, unknown>) => ({
-    code: String(item.Code ?? ""), market: Number(item.MktNum), name: String(item.Name ?? ""), classify: String(item.Classify ?? ""),
-  })).filter((item: { code: string; market: number; classify: string }) => item.classify === "AStock" && /^\d{6}$/.test(item.code) && [0, 1].includes(item.market));
-  return { items, meta: metaFrom(result) };
+  if (!normalized) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "腾讯搜索" } };
+  const url = `https://smartbox.gtimg.cn/s3/?q=${encodeURIComponent(normalized)}&t=all`;
+  const result = await resilientTencentText(url, 60_000, { attempts: 1, timeoutMs: 1_800 });
+  const match = result.value.match(/v_hint="([\s\S]*?)";?/);
+  if (!match) return { items: [], meta: { ...metaFrom(result), source: "腾讯搜索" } };
+  let decoded = match[1];
+  try { decoded = JSON.parse(`"${match[1].replace(/"/g, '\\"')}"`); } catch { /* Names without escape sequences are already usable. */ }
+  const items = decoded.split("^").map((row) => {
+    const [market, code, name, , classify] = row.split("~");
+    return { code, market: market === "sh" ? 1 : market === "sz" ? 0 : -1, name, classify };
+  }).filter((item) => /^\d{6}$/.test(item.code) && [0, 1].includes(item.market) && item.classify.startsWith("GP-A"))
+    .slice(0, 12)
+    .map(({ classify: _classify, ...item }) => item);
+  return { items, meta: { ...metaFrom(result), source: "腾讯搜索" } };
 }
 
 export async function GET(request: Request) {

@@ -569,6 +569,7 @@ export function StockTerminal() {
   const [suggestions, setSuggestions] = useState<Stock[]>([]);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [searching, setSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState("");
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const dragged = useRef<string | null>(null);
   const quoteRequest = useRef<Record<"all" | "priority" | "overseas", number>>({ all: 0, priority: 0, overseas: 0 });
@@ -899,17 +900,26 @@ export function StockTerminal() {
   }, [notice]);
 
   useEffect(() => {
-    if (!query.trim() || /^\d{6}$/.test(query.trim())) { setSuggestions([]); setSearching(false); return; }
+    if (!query.trim()) { setSuggestions([]); setSearching(false); setSearchMessage(""); return; }
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       setSearching(true);
+      setSearchMessage("");
       try {
         const response = await fetch(`/api/market?action=search&q=${encodeURIComponent(query.trim())}`, { signal: controller.signal });
         const data = await response.json();
-        if (response.ok) setSuggestions(data.items || []);
-      } catch { /* A later keystroke cancels the previous search. */ }
+        if (!response.ok) throw new Error(data.error || "搜索暂不可用");
+        const items = data.items || [];
+        setSuggestions(items);
+        setSearchMessage(items.length ? "" : "没有找到匹配的沪深股票");
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setSuggestions([]);
+          setSearchMessage("搜索暂不可用，请稍后重试");
+        }
+      }
       finally { setSearching(false); }
-    }, 260);
+    }, 180);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [query]);
 
@@ -923,7 +933,7 @@ export function StockTerminal() {
     const key = keyOf(stock);
     setWatchlist((current) => current.some((item) => keyOf(item) === key) ? current : [...current, stock]);
     selectStock(key);
-    setQuery(""); setSuggestions([]);
+    setQuery(""); setSuggestions([]); setSearchMessage("");
     setNotice(watchlist.some((item) => keyOf(item) === key) ? "已在自选列表中" : `已添加 ${stock.name}`);
   }, [selectStock, watchlist]);
 
@@ -943,7 +953,7 @@ export function StockTerminal() {
     } else if (event.key === "ArrowUp" && suggestions.length) {
       event.preventDefault(); setSuggestionIndex((current) => (current - 1 + suggestions.length) % suggestions.length);
     } else if (event.key === "Escape") {
-      setQuery(""); setSuggestions([]); searchRef.current?.blur();
+      setQuery(""); setSuggestions([]); setSearchMessage(""); searchRef.current?.blur();
     }
   };
 
@@ -1048,10 +1058,11 @@ export function StockTerminal() {
           </div>
           <form className="search" role="search" onSubmit={submitSearch}>
             <span className="search-icon" aria-hidden="true">⌕</span>
-            <input ref={searchRef} name="stock-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => { setQuery(event.target.value); setSuggestionIndex(0); }} onKeyDown={handleSearchKeyDown} placeholder="股票名称 / 代码…" aria-label="搜索股票，Control 加斜杠快速聚焦" aria-activedescendant={suggestions[suggestionIndex] ? `suggest-${keyOf(suggestions[suggestionIndex])}` : undefined} />
-            {query && <button type="button" className="search-clear" aria-label="清空股票搜索" onClick={() => { setQuery(""); setSuggestions([]); }}>×</button>}
-            {(searching || suggestions.length > 0) && <div className="suggestions" aria-live="polite">
+            <input ref={searchRef} name="stock-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => { setQuery(event.target.value); setSuggestionIndex(0); setSearchMessage(""); }} onKeyDown={handleSearchKeyDown} placeholder="股票名称 / 代码…" aria-label="搜索股票，Control 加斜杠快速聚焦" aria-activedescendant={suggestions[suggestionIndex] ? `suggest-${keyOf(suggestions[suggestionIndex])}` : undefined} />
+            {query && <button type="button" className="search-clear" aria-label="清空股票搜索" onClick={() => { setQuery(""); setSuggestions([]); setSearchMessage(""); }}>×</button>}
+            {(searching || suggestions.length > 0 || searchMessage) && <div className="suggestions" aria-live="polite">
               {searching && <div className="suggest-status">正在检索市场…</div>}
+              {!searching && searchMessage && <div className="suggest-status">{searchMessage}</div>}
               {!searching && suggestions.map((stock, index) => <button type="button" id={`suggest-${keyOf(stock)}`} className={suggestionIndex === index ? "active" : ""} key={keyOf(stock)} onMouseEnter={() => setSuggestionIndex(index)} onClick={() => addStock(stock)}><span><strong>{stock.name}</strong><small>{stock.code}</small></span><em>{stock.market === 1 ? "沪市" : "深市"}</em></button>)}
               {!searching && <div className="search-shortcuts"><span>↑↓ 选择</span><span>Enter 添加</span><span>Esc 关闭</span></div>}
             </div>}

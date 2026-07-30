@@ -63,12 +63,15 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /分时增量约2秒 · 重点行情约1秒/);
   assert.match(terminal, /QUOTES_CACHE_KEY/);
   assert.match(terminal, /连续报价滚动计算/);
+  assert.match(terminal, /没有找到匹配的沪深股票/);
+  assert.match(terminal, /if \(!query\.trim\(\)\)/);
   assert.match(terminal, /isAShareTrading\(\) \? 60_000 : 120_000/);
   assert.match(terminal, /full=\$\{includeKline \? "1" : "0"}/);
   assert.match(marketRoute, /preferredRegion = "hkg1"/);
   assert.match(marketRoute, /resilientTencentText/);
   assert.match(marketRoute, /https:\/\/web\.sqt\.gtimg\.cn\/q=/);
   assert.match(marketRoute, /appstock\/app\/minute\/query/);
+  assert.match(marketRoute, /smartbox\.gtimg\.cn\/s3/);
   assert.match(marketRoute, /loadEastmoneyQuotes\(missingAShares\)/);
   assert.match(specialRoute, /preferredRegion = "iad1"/);
   assert.deepEqual(JSON.parse(vercelConfig).regions, ["hkg1"]);
