@@ -720,8 +720,8 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outli
   .sector-main { margin: 0; }
   .capital-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
   .capital-main, .capital-rank { min-height: 620px; height: calc(100vh - 106px); }
-  .rankings-grid { grid-template-columns: 1fr; }
-  .ranking-board { height: 670px; }
+  .rankings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ranking-board { height: 670px; min-width: 0; }
 }
 
 @media (max-width: 700px) {
@@ -746,8 +746,18 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outli
   .rankings-header { min-height: 130px; display: block; padding: 13px; }
   .rankings-status { min-width: 0; margin-top: 10px; }
   .rankings-status .data-stamp { min-width: 0; }
-  .rankings-grid { display: block; }
-  .ranking-board { height: 620px !important; min-height: 520px; margin-bottom: 7px; resize: none; }
-  .ranking-columns, .ranking-row { grid-template-columns: 34px minmax(100px, 1fr) 62px 72px 82px; gap: 4px; padding: 0 8px; }
-  .ranking-columns span:last-child, .ranking-row > span:last-child { display: none; }
+  .rankings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+  .ranking-board { height: 620px !important; min-width: 0; min-height: 520px; margin-bottom: 0; resize: none; }
+  .ranking-board-head { min-height: 52px; padding: 8px 7px; }
+  .ranking-board-head > div span { display: none; }
+  .ranking-board-head > div strong { margin-top: 0; font-size: 12px; }
+  .ranking-board-head > em { font-size: 9px; }
+  .ranking-columns, .ranking-row { grid-template-columns: 25px minmax(0, 1fr) 55px; gap: 3px; padding: 0 5px; }
+  .ranking-columns { font-size: 9px; }
+  .ranking-row { min-height: 48px; }
+  .ranking-row > span:nth-child(2) strong { font-size: 11.5px; }
+  .ranking-row > span:nth-child(2) small { margin-top: 3px; font-size: 9px; }
+  .ranking-columns span:nth-child(3), .ranking-row > span:nth-child(3),
+  .ranking-columns span:nth-child(5), .ranking-row > span:nth-child(5),
+  .ranking-columns span:nth-child(6), .ranking-row > span:nth-child(6) { display: none; }
 }
