@@ -44,7 +44,10 @@ async function resilientJson(url: string, ttlMs = 8_000, options: RequestOptions
         const response = await fetch(url, {
           signal: controller.signal,
           cache: "no-store",
-          headers: { Accept: "application/json,text/plain,*/*" },
+          headers: {
+            Accept: "application/json,text/plain,*/*",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127 Safari/537.36",
+          },
         });
         if (!response.ok) throw new Error(`上游服务返回 ${response.status}`);
         const value = await response.json();
@@ -97,7 +100,11 @@ async function resilientText(url: string, ttlMs = 8_000, options: RequestOptions
       const response = await fetch(url, {
         signal: controller.signal,
         cache: "no-store",
-        headers: { Accept: "*/*", Referer: "https://finance.sina.com.cn/" },
+        headers: {
+          Accept: "*/*",
+          Referer: "https://finance.sina.com.cn/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127 Safari/537.36",
+        },
       });
       if (!response.ok) throw new Error(`备用行情返回 ${response.status}`);
       const value = await response.text();
