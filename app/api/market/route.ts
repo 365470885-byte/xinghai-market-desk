@@ -1313,7 +1313,7 @@ async function rankings() {
   }
 
   const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
-  const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22";
+  const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f100";
   const load = (order: 0 | 1) => resilientJson(
     `${EASTMONEY}/clist/get?pn=1&pz=100&po=${order}&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(universe)}&fields=${fields}`,
     3_000,
@@ -1325,7 +1325,7 @@ async function rankings() {
     .map((item) => item.value);
   if (!available.length) throw new Error("涨跌排行暂时无法连接");
   const parseRows = (result: Awaited<ReturnType<typeof resilientJson>> | null) => (result?.value?.data?.diff ?? [])
-    .map((item: Record<string, unknown>) => parseQuote(item))
+    .map((item: Record<string, unknown>) => ({ ...parseQuote(item), sector: String(item.f100 || "板块待更新") }))
     .filter((item: ReturnType<typeof parseQuote>) => item.code && item.name && item.price !== null)
     .slice(0, 100);
   const gainersResult = settled[0].status === "fulfilled" ? settled[0].value : null;

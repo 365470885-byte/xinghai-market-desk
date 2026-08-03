@@ -693,8 +693,10 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outli
 .ranking-row > span { min-width: 0; font: 620 11px/1.2 var(--font-data); }
 .ranking-row > span:first-child { color: #788897; font-size: 10px; }
 .ranking-row > span:nth-child(n+3) { text-align: right; }
-.ranking-row > span:nth-child(2) strong { display: block; overflow: hidden; color: #162c3e; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-ui); font-size: 12.5px; font-weight: 680; }
-.ranking-row > span:nth-child(2) small { display: block; margin-top: 4px; color: #748596; font-family: var(--font-data); font-size: 10px; font-weight: 560; }
+.ranking-name-line { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.ranking-name-line strong { min-width: 0; display: block; overflow: hidden; color: #162c3e; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-ui); font-size: 12.5px; font-weight: 680; }
+.ranking-name-line em { max-width: 88px; flex: 0 1 auto; overflow: hidden; padding: 2px 5px; border: 1px solid #cfdee8; border-radius: 3px; background: #f3f8fb; color: #49687d; text-overflow: ellipsis; white-space: nowrap; font: normal 650 9px/1.2 var(--font-ui); }
+.ranking-stock > small { display: block; margin-top: 4px; color: #748596; font-family: var(--font-data); font-size: 10px; font-weight: 560; }
 
 @media (max-width: 1380px) {
   .terminal-shell { min-width: 0; }
@@ -755,8 +757,11 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outli
   .ranking-columns, .ranking-row { grid-template-columns: 25px minmax(0, 1fr) 55px; gap: 3px; padding: 0 5px; }
   .ranking-columns { font-size: 9px; }
   .ranking-row { min-height: 48px; }
-  .ranking-row > span:nth-child(2) strong { font-size: 11.5px; }
-  .ranking-row > span:nth-child(2) small { margin-top: 3px; font-size: 9px; }
+  .ranking-row { min-height: 56px; }
+  .ranking-name-line { display: block; }
+  .ranking-name-line strong { font-size: 11.5px; }
+  .ranking-name-line em { max-width: 100%; display: block; width: fit-content; margin-top: 3px; padding: 1px 4px; font-size: 8.5px; }
+  .ranking-stock > small { display: none; }
   .ranking-columns span:nth-child(3), .ranking-row > span:nth-child(3),
   .ranking-columns span:nth-child(5), .ranking-row > span:nth-child(5),
   .ranking-columns span:nth-child(6), .ranking-row > span:nth-child(6) { display: none; }

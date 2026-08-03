@@ -13,7 +13,7 @@ type Quote = Stock & {
   price: number | null; changePercent: number | null; speed: number | null; high?: number | null;
   low?: number | null; open?: number | null; prevClose?: number | null; volume?: number | null;
   amount?: number | null; marketCap?: number | null; turnover?: number | null; amplitude?: number | null; netInflow?: number | null;
-  limitState?: "up" | "down" | null; sealedAmount?: number | null;
+  limitState?: "up" | "down" | null; sealedAmount?: number | null; sector?: string | null;
 };
 type Trend = { time: string; price: number | null; average: number | null; volume: number | null; amount: number | null };
 type Kline = { date: string; open: number | null; close: number | null; high: number | null; low: number | null; volume: number | null; amount: number | null; changePercent: number | null };
@@ -168,52 +168,44 @@ const finiteNumber = (value: unknown) => {
 };
 
 async function fetchDirectRankings(): Promise<RankingData> {
-  const loadSide = async (ascending: boolean) => {
+  const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
+  const fields = "f2,f3,f5,f6,f8,f12,f13,f14,f15,f16,f17,f18,f20,f100";
+  const loadSide = async (order: 0 | 1) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 5_000);
     try {
-      const pages = await Promise.all([1, 2].map(async (page) => {
-        const url = `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=100&sort=changepercent&asc=${ascending ? 1 : 0}&node=hs_a&symbol=`;
-        const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
-        if (!response.ok) throw new Error("排行直连暂不可用");
-        const rows = await response.json();
-        return Array.isArray(rows) ? rows as Array<Record<string, unknown>> : [];
-      }));
-      return pages.flat()
-        .filter((item) => /^(sh|sz)\d{6}$/.test(String(item.symbol ?? "")))
-        .map((item): Quote => {
-          const symbol = String(item.symbol ?? "");
-          const marketCapWan = finiteNumber(item.mktcap);
-          return {
-            code: String(item.code ?? ""),
-            market: symbol.startsWith("sh") ? 1 : 0,
-            name: String(item.name ?? ""),
-            price: finiteNumber(item.trade),
-            changePercent: finiteNumber(item.changepercent),
-            speed: null,
-            high: finiteNumber(item.high),
-            low: finiteNumber(item.low),
-            open: finiteNumber(item.open),
-            prevClose: finiteNumber(item.settlement),
-            volume: finiteNumber(item.volume),
-            amount: finiteNumber(item.amount),
-            marketCap: marketCapWan === null ? null : marketCapWan * 10_000,
-            turnover: finiteNumber(item.turnoverratio),
-          };
-        })
-        .filter((item) => item.code && item.name && item.price !== null)
-        .slice(0, 100);
+      const url = `https://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=${order}&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(universe)}&fields=${fields}`;
+      const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+      if (!response.ok) throw new Error("排行直连暂不可用");
+      const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
+      return (payload.data?.diff || []).map((item): Quote => ({
+        code: String(item.f12 ?? ""),
+        market: finiteNumber(item.f13) === 1 ? 1 : 0,
+        name: String(item.f14 ?? ""),
+        price: finiteNumber(item.f2),
+        changePercent: finiteNumber(item.f3),
+        speed: null,
+        high: finiteNumber(item.f15),
+        low: finiteNumber(item.f16),
+        open: finiteNumber(item.f17),
+        prevClose: finiteNumber(item.f18),
+        volume: finiteNumber(item.f5),
+        amount: finiteNumber(item.f6),
+        marketCap: finiteNumber(item.f20),
+        turnover: finiteNumber(item.f8),
+        sector: String(item.f100 || "板块待更新"),
+      })).filter((item) => item.code && item.name && item.price !== null).slice(0, 100);
     } finally {
       window.clearTimeout(timer);
     }
   };
 
-  const [gainers, losers] = await Promise.all([loadSide(false), loadSide(true)]);
+  const [gainers, losers] = await Promise.all([loadSide(1), loadSide(0)]);
   if (gainers.length < 100 || losers.length < 100) throw new Error("排行直连数据不完整");
   return {
     gainers,
     losers,
-    meta: { mode: "live", updatedAt: Date.now(), source: "新浪财经 · 浏览器直连" },
+    meta: { mode: "live", updatedAt: Date.now(), source: "东方财富 · 浏览器直连" },
   };
 }
 
@@ -1385,11 +1377,11 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
       <div><span>{description}</span><strong>{title}</strong></div>
       <em className={direction}>{items.length} 只</em>
     </div>
-    <div className="ranking-columns" aria-hidden="true"><span>排名</span><span>股票</span><span>最新价</span><span>涨跌幅</span><span>成交额</span><span>总市值</span></div>
+    <div className="ranking-columns" aria-hidden="true"><span>排名</span><span>股票 / 所属板块</span><span>最新价</span><span>涨跌幅</span><span>成交额</span><span>总市值</span></div>
     <div className="ranking-list" aria-label={title}>
       {loading && !items.length ? <LoadingRows count={12} /> : items.map((stock, index) => <button type="button" className="ranking-row" key={keyOf(stock)} onClick={() => onPick(stock)} title={`查看 ${stock.name} 详情`}>
         <span>{String(index + 1).padStart(3, "0")}</span>
-        <span><strong>{stock.name}</strong><small>{stock.code}</small></span>
+        <span className="ranking-stock"><span className="ranking-name-line"><strong>{stock.name}</strong><em title={stock.sector || "板块待更新"}>{stock.sector || "板块待更新"}</em></span><small>{stock.code}</small></span>
         <span>{number(stock.price)}</span>
         <span className={tone(stock.changePercent)}>{signed(stock.changePercent)}</span>
         <span>{amount(stock.amount)}</span>
