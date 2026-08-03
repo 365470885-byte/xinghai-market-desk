@@ -142,17 +142,24 @@ function DataStamp({ meta, label, compact = false }: { meta: MarketMeta | null |
   </div>;
 }
 
-async function fetchJson<T>(url: string, timeout = 12_000): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "数据服务暂不可用");
-    return body as T;
-  } finally {
-    clearTimeout(timer);
+async function fetchJson<T>(url: string, timeout = 12_000, retries = 0): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "数据服务暂不可用");
+      return body as T;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 450));
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  throw lastError instanceof Error ? lastError : new Error("数据服务暂不可用");
 }
 
 function directSpecialQuote(stock: Stock, data: Record<string, unknown>): Quote {
@@ -1288,7 +1295,7 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
   const load = useCallback(async () => {
     if (!dataRef.current) setLoading(true);
     try {
-      const next = await fetchJson<RankingData>("/api/market?action=rankings");
+      const next = await fetchJson<RankingData>("/api/market?action=rankings", 20_000, 1);
       dataRef.current = next;
       setData(next);
       setError("");
