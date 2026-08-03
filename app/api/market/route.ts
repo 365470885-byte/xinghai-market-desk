@@ -1292,7 +1292,7 @@ async function rankings() {
   };
 
   const sinaSettled = await Promise.allSettled([loadSina(false), loadSina(true)]);
-  if (sinaSettled.every((item) => item.status === "fulfilled")) {
+  if (sinaSettled[0].status === "fulfilled" && sinaSettled[1].status === "fulfilled") {
     const gainers = sinaSettled[0].value;
     const losers = sinaSettled[1].value;
     if (gainers.items.length === 100 && losers.items.length === 100) {
