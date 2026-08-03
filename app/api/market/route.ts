@@ -305,6 +305,7 @@ function parseQuote(item: Record<string, unknown>) {
     prevClose: numeric(item.f18 ?? item.f60),
     volume: numeric(item.f5 ?? item.f47),
     amount: numeric(item.f6 ?? item.f48),
+    marketCap: numeric(item.f20),
     turnover: numeric(item.f8 ?? item.f168),
     amplitude: numeric(item.f7 ?? item.f171),
     netInflow: numeric(item.f62),
@@ -352,6 +353,7 @@ function parseSinaQuotes(text: string, requested: string[]) {
         prevClose,
         volume: numeric(parts[9]),
         amount: null,
+        marketCap: null,
         turnover: null,
         amplitude: prevClose && prevClose > 0 && numeric(parts[4]) !== null && numeric(parts[5]) !== null
           ? (((numeric(parts[4]) as number) - (numeric(parts[5]) as number)) / prevClose) * 100
@@ -378,6 +380,7 @@ function parseSinaQuotes(text: string, requested: string[]) {
         prevClose: numeric(parts[9]),
         volume: numeric(parts[12]),
         amount: null,
+        marketCap: null,
         turnover: null,
         amplitude: null,
         netInflow: null,
@@ -421,6 +424,7 @@ function parseSinaQuotes(text: string, requested: string[]) {
       prevClose,
       volume: numeric(parts[8]),
       amount: numeric(parts[9]),
+      marketCap: null,
       turnover: null,
       amplitude: prevClose && prevClose > 0 && numeric(parts[4]) !== null && numeric(parts[5]) !== null
         ? (((numeric(parts[4]) as number) - (numeric(parts[5]) as number)) / prevClose) * 100
@@ -470,6 +474,7 @@ function parseTencentQuotes(text: string, requested: string[]) {
         ? askOneVolume * price * 100
         : null;
     const amountWan = numeric(parts[37]);
+    const marketCapYi = numeric(parts[45]);
     items.push({
       code,
       market: Number(marketText),
@@ -483,6 +488,7 @@ function parseTencentQuotes(text: string, requested: string[]) {
       prevClose,
       volume: numeric(parts[36] || parts[6]),
       amount: amountWan === null ? null : amountWan * 10_000,
+      marketCap: marketCapYi === null ? null : marketCapYi * 100_000_000,
       turnover: numeric(parts[38]),
       amplitude: numeric(parts[43]),
       netInflow: null,
@@ -523,6 +529,7 @@ function parseThsIndexQuote(text: string, secid: string) {
     prevClose,
     volume: numeric(row["13"]),
     amount: numeric(row["19"]),
+    marketCap: null,
     turnover: null,
     amplitude: prevClose && prevClose > 0 && high !== null && low !== null ? ((high - low) / prevClose) * 100 : null,
     netInflow: null,
@@ -606,7 +613,7 @@ async function quotes(secids: string[]) {
   };
 
   const loadEastmoneyQuotes = async (requested: string[]): Promise<QuoteBatch> => {
-    const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
+    const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f62";
     const chunks: string[][] = [];
     for (let index = 0; index < requested.length; index += 6) chunks.push(requested.slice(index, index + 6));
     const settled = await Promise.allSettled(chunks.map((chunk) => {
@@ -752,7 +759,7 @@ async function detail(secid: string, since = "", includeKline = true) {
     }
   }
 
-  const quoteFields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
+  const quoteFields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f62";
   const quoteUrl = `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=${quoteFields}&secids=${encodeURIComponent(secid)}`;
   const trendsUrl = `${EASTMONEY_HISTORY}/stock/trends2/get?secid=${encodeURIComponent(secid)}&ndays=1&iscr=0&iscca=0&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11&fields2=f51,f52,f53,f54,f55,f56,f57,f58`;
   const klineUrl = `${EASTMONEY_HISTORY}/stock/kline/get?secid=${encodeURIComponent(secid)}&klt=101&fqt=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&end=20500101&lmt=45`;
@@ -1240,6 +1247,36 @@ async function capital() {
   };
 }
 
+async function rankings() {
+  const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
+  const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22";
+  const load = (order: 0 | 1) => resilientJson(
+    `${EASTMONEY}/clist/get?pn=1&pz=100&po=${order}&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(universe)}&fields=${fields}`,
+    3_000,
+    { attempts: 2, timeoutMs: 4_000 },
+  );
+  const settled = await Promise.allSettled([load(1), load(0)]);
+  const available = settled
+    .filter((item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof resilientJson>>> => item.status === "fulfilled")
+    .map((item) => item.value);
+  if (!available.length) throw new Error("涨跌排行暂时无法连接");
+  const parseRows = (result: Awaited<ReturnType<typeof resilientJson>> | null) => (result?.value?.data?.diff ?? [])
+    .map((item: Record<string, unknown>) => parseQuote(item))
+    .filter((item: ReturnType<typeof parseQuote>) => item.code && item.name && item.price !== null)
+    .slice(0, 100);
+  const gainersResult = settled[0].status === "fulfilled" ? settled[0].value : null;
+  const losersResult = settled[1].status === "fulfilled" ? settled[1].value : null;
+  return {
+    gainers: parseRows(gainersResult),
+    losers: parseRows(losersResult),
+    meta: {
+      ...metaFrom(...available),
+      mode: settled.some((item) => item.status === "rejected") ? "stale" as CacheMode : metaFrom(...available).mode,
+      source: "东方财富 · 沪深A股",
+    },
+  };
+}
+
 async function search(keyword: string) {
   const normalized = keyword.trim().slice(0, 30);
   if (!normalized) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "腾讯搜索" } };
@@ -1273,6 +1310,7 @@ export async function GET(request: Request) {
     if (action === "sectors") return json(await sectors(url.searchParams.get("type") ?? "concept"));
     if (action === "sector-stocks") return json(await sectorStocks(url.searchParams.get("code") ?? ""));
     if (action === "capital") return json(await capital());
+    if (action === "rankings") return json(await rankings());
     if (action === "search") return json(await search(url.searchParams.get("q") ?? ""));
     return json({ error: "未知数据请求" }, 400);
   } catch (error) {

@@ -2,17 +2,17 @@
 
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type PageKey = "watch" | "capital";
+type PageKey = "watch" | "capital" | "rankings";
 type ChartMode = "time" | "day";
 type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: number; source: string };
-type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital";
+type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings";
 type FeedSnapshot = MarketMeta & { label: string };
 type WatchSort = "manual" | "change" | "speed" | "amount";
 type Stock = { code: string; market: number; name: string };
 type Quote = Stock & {
   price: number | null; changePercent: number | null; speed: number | null; high?: number | null;
   low?: number | null; open?: number | null; prevClose?: number | null; volume?: number | null;
-  amount?: number | null; turnover?: number | null; amplitude?: number | null; netInflow?: number | null;
+  amount?: number | null; marketCap?: number | null; turnover?: number | null; amplitude?: number | null; netInflow?: number | null;
   limitState?: "up" | "down" | null; sealedAmount?: number | null;
 };
 type Trend = { time: string; price: number | null; average: number | null; volume: number | null; amount: number | null };
@@ -32,6 +32,7 @@ type CapitalData = {
   outflow: Array<{ code: string; name: string; amount: number | null }>;
   meta: MarketMeta;
 };
+type RankingData = { gainers: Quote[]; losers: Quote[]; meta: MarketMeta };
 
 const DEFAULT_STOCKS: Stock[] = [
   { code: "CNOW", market: 101, name: "富时A50期指" },
@@ -82,7 +83,7 @@ const PINNED_KEY = "xinghai_pinned_v2";
 const QUOTES_CACHE_KEY = "xinghai_quotes_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
-  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向",
+  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行",
 };
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
@@ -355,11 +356,13 @@ function aShareSessionProgress(time: string, fallbackIndex: number) {
 }
 
 type ChartHover = { x: number; y: number; label: string; price: number | null; average?: number | null; volume?: number | null; amount?: number | null };
+const MARKET_CHART_LEFT = 88;
+const MARKET_CHART_RIGHT = 18;
 
 function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode }) {
   const [hover, setHover] = useState<ChartHover | null>(null);
   const ref = useCanvas((ctx, width, height) => {
-    const pad = { l: 48, r: 18, t: 24, b: 36 };
+    const pad = { l: MARKET_CHART_LEFT, r: MARKET_CHART_RIGHT, t: 24, b: 36 };
     grid(ctx, width, height, pad);
     const plotW = width - pad.l - pad.r;
     const plotH = height - pad.t - pad.b;
@@ -418,10 +421,16 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       ctx.fillStyle = "#55b9ff";
       ctx.fill();
 
-      ctx.textAlign = "right"; ctx.fillStyle = "#7f8fa1";
-      ctx.fillText(max.toFixed(2), pad.l - 8, pad.t + 4);
-      ctx.fillText(base.toFixed(2), pad.l - 8, y(base) + 4);
-      ctx.fillText(min.toFixed(2), pad.l - 8, height - pad.b);
+      const axisLabel = (value: number) => `${value.toFixed(2)}  ${signed(((value - base) / base) * 100)}`;
+      const drawAxisLabel = (value: number, position: number) => {
+        const change = ((value - base) / base) * 100;
+        ctx.fillStyle = change > 0.005 ? "#9a5f00" : change < -0.005 ? "#087f60" : "#66798a";
+        ctx.fillText(axisLabel(value), pad.l - 8, position);
+      };
+      ctx.textAlign = "right";
+      drawAxisLabel(max, pad.t + 4);
+      drawAxisLabel(base, y(base) + 4);
+      drawAxisLabel(min, height - pad.b);
       ctx.textAlign = "left"; ctx.fillStyle = "#9a6b25"; ctx.fillText("昨收", pad.l + 5, y(base) - 6);
       ctx.textAlign = "center";
       ["09:30", "10:30", "11:30 / 13:00", "14:00", "15:00"].forEach((label, i) => ctx.fillText(label, pad.l + (plotW * i) / 4, height - 12));
@@ -457,8 +466,8 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
 
   const inspectPoint = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const plotWidth = Math.max(1, rect.width - 66);
-    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - 48) / plotWidth));
+    const plotWidth = Math.max(1, rect.width - MARKET_CHART_LEFT - MARKET_CHART_RIGHT);
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - MARKET_CHART_LEFT) / plotWidth));
     const y = Math.min(rect.height - 36, Math.max(24, event.clientY - rect.top));
     if (mode === "time") {
       const rows = (detail?.trends || []).filter((row) => row.price !== null);
@@ -470,7 +479,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
         if (distance < nearestDistance) { nearestIndex = index; nearestDistance = distance; }
       });
       const row = rows[nearestIndex];
-      const x = 48 + aShareSessionProgress(row.time, nearestIndex) * plotWidth;
+      const x = MARKET_CHART_LEFT + aShareSessionProgress(row.time, nearestIndex) * plotWidth;
       setHover({ x, y, label: row.time.split(" ").at(-1) || row.time, price: row.price, average: row.average, volume: row.volume, amount: row.amount });
       return;
     }
@@ -478,7 +487,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
     if (!rows.length) return;
     const index = Math.min(rows.length - 1, Math.max(0, Math.round(ratio * (rows.length - 1))));
     const row = rows[index];
-    setHover({ x: 48 + ((index + .5) / rows.length) * plotWidth, y, label: row.date, price: row.close, volume: row.volume, amount: row.amount });
+    setHover({ x: MARKET_CHART_LEFT + ((index + .5) / rows.length) * plotWidth, y, label: row.date, price: row.close, volume: row.volume, amount: row.amount });
   };
 
   return <div className="market-chart-wrap" onPointerMove={inspectPoint} onPointerLeave={() => setHover(null)}>
@@ -1020,8 +1029,8 @@ export function StockTerminal() {
         event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return;
       }
       if (isTextEntry(event.target) || event.altKey || event.metaKey || event.ctrlKey) return;
-      if (event.key === "1" || event.key === "2") {
-        setPage(event.key === "1" ? "watch" : "capital"); return;
+      if (event.key === "1" || event.key === "2" || event.key === "3") {
+        setPage(event.key === "1" ? "watch" : event.key === "2" ? "capital" : "rankings"); return;
       }
       if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "k") {
         if (!displayedStocks.length) return;
@@ -1066,7 +1075,7 @@ export function StockTerminal() {
           <div><strong>星辰大海</strong><small>行情研究台</small></div>
         </div>
         <nav className="main-tabs" aria-label="主要页面">
-          {([ ["watch", "自选行情"], ["capital", "资金流向"] ] as Array<[PageKey, string]>).map(([key, label]) => (
+          {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"] ] as Array<[PageKey, string]>).map(([key, label]) => (
             <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => setPage(key)}>{label}</button>
           ))}
         </nav>
@@ -1142,7 +1151,7 @@ export function StockTerminal() {
               <div className="quote-heading"><div className="quote-symbol"><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><DataStamp meta={activeDetail?.meta || feedStates.detail} label="个股详情" compact /></div>
               <div className="price-cluster"><strong className={tone(activeQuote.changePercent)}>{number(activeQuote.price)}</strong><div className={tone(activeQuote.changePercent)}><span>{signed(activeQuote.changePercent)}</span><small>较前收 {number(activeQuote.prevClose)}</small></div></div>
               <div className="metric-grid">
-                {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
+                {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)], ["总市值", marketAmount(activeQuote.marketCap)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
               </div>
             </> : <div className="hero-loading" role="status" aria-label="正在加载个股行情"><div /><div /><div /></div>}
           </section>
@@ -1157,11 +1166,12 @@ export function StockTerminal() {
         <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
           <section className="panel pulse-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>市场快照</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => selectStock(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
           <section className="panel reliability-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>数据状态</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "优" : connection === "stale" ? "缓" : connection === "offline" ? "断" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
-          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键切换页面 · 空格键暂停</kbd></section>
+          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1/2/3 切换页面 · 空格键暂停</kbd></section>
         </aside>
       </div>}
 
       {page === "capital" && <CapitalPage updateConnection={updateConnection} />}
+      {page === "rankings" && <RankingsPage onPick={addStock} updateConnection={updateConnection} />}
 
       {menu && <div className="context-menu" role="menu" aria-label="自选股操作" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }}>
         <button type="button" role="menuitem" onClick={() => togglePin(menu.key)}><span aria-hidden="true">◆</span>{pinned.has(menu.key) ? "取消固定" : "固定置顶"}</button>
@@ -1268,6 +1278,71 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
       <div className="stock-table"><div className="table-head"><span>排名</span><span>股票</span><span>最新价</span><span>涨跌幅</span><span>涨速</span><span>主力净流入</span><span /></div>{detailLoading && !stocks.length ? <LoadingRows count={6} /> : detailError && !stocks.length ? <div className="sector-detail-error"><strong>成分股暂时没有返回</strong><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>立即重试</button></div> : <>{detailError && <div className="sector-cache-note"><span>{detailError}</span><button onClick={() => setDetailNonce((value) => value + 1)}>重新连接</button></div>}{sortedStocks.map((stock, index) => <button className="table-row" key={`${stock.market}.${stock.code}`} onClick={() => onPick(stock)}><span>{String(index + 1).padStart(2, "0")}</span><span><strong>{stock.name}</strong><small>{stock.code}</small></span><span>{number(stock.price)}</span><span className={tone(stock.change)}>{signed(stock.change)}</span><span className={tone(stock.speed)}>{signed(stock.speed)}</span><span className={tone(stock.inflow)}>{amount(stock.inflow)}</span><span>＋自选</span></button>)}</>}</div>
     </main>
   </div>;
+}
+
+function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
+  const [data, setData] = useState<RankingData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const dataRef = useRef<RankingData | null>(null);
+  const load = useCallback(async () => {
+    if (!dataRef.current) setLoading(true);
+    try {
+      const next = await fetchJson<RankingData>("/api/market?action=rankings");
+      dataRef.current = next;
+      setData(next);
+      setError("");
+      updateConnection(next.meta, "rankings");
+    } catch (err) {
+      const previous = dataRef.current;
+      setError(err instanceof Error ? err.message : "涨跌排行加载失败");
+      updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "涨跌排行暂不可用" }, "rankings");
+    } finally {
+      setLoading(false);
+    }
+  }, [updateConnection]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    const tick = async () => {
+      await load();
+      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 5_000 : 15_000);
+    };
+    tick();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [load]);
+
+  const board = (title: string, description: string, items: Quote[], direction: "up" | "down") => <section className="ranking-board panel">
+    <div className="ranking-board-head">
+      <div><span>{description}</span><strong>{title}</strong></div>
+      <em className={direction}>{items.length} 只</em>
+    </div>
+    <div className="ranking-columns" aria-hidden="true"><span>排名</span><span>股票</span><span>最新价</span><span>涨跌幅</span><span>成交额</span><span>总市值</span></div>
+    <div className="ranking-list" aria-label={title}>
+      {loading && !items.length ? <LoadingRows count={12} /> : items.map((stock, index) => <button type="button" className="ranking-row" key={keyOf(stock)} onClick={() => onPick(stock)} title={`查看 ${stock.name} 详情`}>
+        <span>{String(index + 1).padStart(3, "0")}</span>
+        <span><strong>{stock.name}</strong><small>{stock.code}</small></span>
+        <span>{number(stock.price)}</span>
+        <span className={tone(stock.changePercent)}>{signed(stock.changePercent)}</span>
+        <span>{amount(stock.amount)}</span>
+        <span>{marketAmount(stock.marketCap)}</span>
+      </button>)}
+      {!loading && !items.length && <EmptyState title={`${title}暂无数据`} detail="行情源正在恢复，请稍后重试" />}
+    </div>
+  </section>;
+
+  return <main className="rankings-page" id="main-content">
+    <header className="rankings-header panel">
+      <div><span>沪深A股实时排序</span><h1>涨跌排行</h1><p>按当前涨跌幅排序，点击任意股票可进入个股详情。</p></div>
+      <div className="rankings-status"><DataStamp meta={data?.meta} label="涨跌排行" compact /><button type="button" onClick={load} disabled={loading}>{loading ? "同步中…" : "立即刷新"}</button></div>
+    </header>
+    {error && <div className="ranking-warning" role="status"><strong>{data ? "榜单刷新暂时中断" : "榜单连接失败"}</strong><span>{error}{data ? "，当前保留最近一次有效结果。" : ""}</span></div>}
+    <div className="rankings-grid">
+      {board("涨幅前100", "上涨领先", data?.gainers || [], "up")}
+      {board("跌幅前100", "下跌领先", data?.losers || [], "down")}
+    </div>
+  </main>;
 }
 
 function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
