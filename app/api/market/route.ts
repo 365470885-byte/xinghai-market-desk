@@ -1256,11 +1256,11 @@ async function capital() {
 
 async function rankings() {
   const loadSina = async (ascending: boolean) => {
-    const pages = [await resilientText(
-      `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num=100&sort=changepercent&asc=${ascending ? 1 : 0}&node=hs_a&symbol=`,
+    const pages = await Promise.all([1, 2].map((page) => resilientText(
+      `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=100&sort=changepercent&asc=${ascending ? 1 : 0}&node=hs_a&symbol=`,
       3_000,
       { attempts: 1, timeoutMs: 3_500 },
-    )];
+    )));
     const rows = pages.flatMap((result) => {
       try {
         const parsed = JSON.parse(result.value);
