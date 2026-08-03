@@ -1248,12 +1248,69 @@ async function capital() {
 }
 
 async function rankings() {
+  const loadSina = async (ascending: boolean) => {
+    const pages = await Promise.all([1, 2].map((page) => resilientText(
+      `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=100&sort=changepercent&asc=${ascending ? 1 : 0}&node=hs_a&symbol=`,
+      3_000,
+      { attempts: 1, timeoutMs: 3_500 },
+    )));
+    const rows = pages.flatMap((result) => {
+      try {
+        const parsed = JSON.parse(result.value);
+        return Array.isArray(parsed) ? parsed as Array<Record<string, unknown>> : [];
+      } catch {
+        return [];
+      }
+    });
+    const items = rows
+      .filter((item) => /^(sh|sz)\d{6}$/.test(String(item.symbol ?? "")))
+      .map((item) => {
+        const symbol = String(item.symbol ?? "");
+        const marketCapWan = numeric(item.mktcap);
+        return parseQuote({
+          f2: item.trade,
+          f3: item.changepercent,
+          f5: item.volume,
+          f6: item.amount,
+          f7: null,
+          f8: item.turnoverratio,
+          f12: item.code,
+          f13: symbol.startsWith("sh") ? 1 : 0,
+          f14: item.name,
+          f15: item.high,
+          f16: item.low,
+          f17: item.open,
+          f18: item.settlement,
+          f20: marketCapWan === null ? null : marketCapWan * 10_000,
+          f22: null,
+          f62: null,
+        });
+      })
+      .filter((item) => item.code && item.name && item.price !== null)
+      .slice(0, 100);
+    return { items, results: pages };
+  };
+
+  const sinaSettled = await Promise.allSettled([loadSina(false), loadSina(true)]);
+  if (sinaSettled.every((item) => item.status === "fulfilled")) {
+    const gainers = sinaSettled[0].value;
+    const losers = sinaSettled[1].value;
+    if (gainers.items.length === 100 && losers.items.length === 100) {
+      const metadata = metaFrom(...gainers.results, ...losers.results);
+      return {
+        gainers: gainers.items,
+        losers: losers.items,
+        meta: { ...metadata, source: "新浪财经 · 沪深A股" },
+      };
+    }
+  }
+
   const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
   const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22";
   const load = (order: 0 | 1) => resilientJson(
     `${EASTMONEY}/clist/get?pn=1&pz=100&po=${order}&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(universe)}&fields=${fields}`,
     3_000,
-    { attempts: 2, timeoutMs: 4_000 },
+    { attempts: 1, timeoutMs: 3_500 },
   );
   const settled = await Promise.allSettled([load(1), load(0)]);
   const available = settled
