@@ -162,6 +162,61 @@ async function fetchJson<T>(url: string, timeout = 12_000, retries = 0): Promise
   throw lastError instanceof Error ? lastError : new Error("数据服务暂不可用");
 }
 
+const finiteNumber = (value: unknown) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+async function fetchDirectRankings(): Promise<RankingData> {
+  const loadSide = async (ascending: boolean) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 5_000);
+    try {
+      const pages = await Promise.all([1, 2].map(async (page) => {
+        const url = `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=100&sort=changepercent&asc=${ascending ? 1 : 0}&node=hs_a&symbol=`;
+        const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+        if (!response.ok) throw new Error("排行直连暂不可用");
+        const rows = await response.json();
+        return Array.isArray(rows) ? rows as Array<Record<string, unknown>> : [];
+      }));
+      return pages.flat()
+        .filter((item) => /^(sh|sz)\d{6}$/.test(String(item.symbol ?? "")))
+        .map((item): Quote => {
+          const symbol = String(item.symbol ?? "");
+          const marketCapWan = finiteNumber(item.mktcap);
+          return {
+            code: String(item.code ?? ""),
+            market: symbol.startsWith("sh") ? 1 : 0,
+            name: String(item.name ?? ""),
+            price: finiteNumber(item.trade),
+            changePercent: finiteNumber(item.changepercent),
+            speed: null,
+            high: finiteNumber(item.high),
+            low: finiteNumber(item.low),
+            open: finiteNumber(item.open),
+            prevClose: finiteNumber(item.settlement),
+            volume: finiteNumber(item.volume),
+            amount: finiteNumber(item.amount),
+            marketCap: marketCapWan === null ? null : marketCapWan * 10_000,
+            turnover: finiteNumber(item.turnoverratio),
+          };
+        })
+        .filter((item) => item.code && item.name && item.price !== null)
+        .slice(0, 100);
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+
+  const [gainers, losers] = await Promise.all([loadSide(false), loadSide(true)]);
+  if (gainers.length < 100 || losers.length < 100) throw new Error("排行直连数据不完整");
+  return {
+    gainers,
+    losers,
+    meta: { mode: "live", updatedAt: Date.now(), source: "新浪财经 · 浏览器直连" },
+  };
+}
+
 function directSpecialQuote(stock: Stock, data: Record<string, unknown>): Quote {
   const price = Number(data.price);
   const prevClose = Number(data.prevClose);
@@ -1295,7 +1350,12 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
   const load = useCallback(async () => {
     if (!dataRef.current) setLoading(true);
     try {
-      const next = await fetchJson<RankingData>("/api/market?action=rankings", 20_000, 1);
+      let next: RankingData;
+      try {
+        next = await fetchDirectRankings();
+      } catch {
+        next = await fetchJson<RankingData>("/api/market?action=rankings", 12_000, 0);
+      }
       dataRef.current = next;
       setData(next);
       setError("");
