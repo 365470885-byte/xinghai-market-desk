@@ -8,6 +8,7 @@ type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: num
 type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings";
 type FeedSnapshot = MarketMeta & { label: string };
 type WatchSort = "manual" | "change" | "speed" | "amount";
+type WatchGroupKey = "main" | "etf";
 type Stock = { code: string; market: number; name: string };
 type Quote = Stock & {
   price: number | null; changePercent: number | null; speed: number | null; high?: number | null;
@@ -42,44 +43,80 @@ const DEFAULT_STOCKS: Stock[] = [
   { code: "883958", market: 102, name: "昨日连板" },
   { code: "399001", market: 0, name: "深证成指" },
   { code: "KS11", market: 100, name: "韩国综合" },
-  { code: "002083", market: 0, name: "孚日股份" },
-  { code: "002879", market: 0, name: "长缆科技" },
-  { code: "688825", market: 1, name: "N长鑫" },
-  { code: "601606", market: 1, name: "长城军工" },
+  { code: "000815", market: 0, name: "美利云" },
+  { code: "603259", market: 1, name: "药明康德" },
+  { code: "001232", market: 0, name: "N嘉立创" },
   { code: "000533", market: 0, name: "顺钠股份" },
-  { code: "600378", market: 1, name: "昊华科技" },
-  { code: "600744", market: 1, name: "华银电力" },
-  { code: "603690", market: 1, name: "至纯科技" },
-  { code: "002208", market: 0, name: "合肥城建" },
-  { code: "002298", market: 0, name: "中电鑫龙" },
-  { code: "001258", market: 0, name: "立新能源" },
-  { code: "002498", market: 0, name: "汉缆股份" },
+  { code: "002131", market: 0, name: "利欧股份" },
+  { code: "603629", market: 1, name: "利通电子" },
+  { code: "601611", market: 1, name: "中国核建" },
+  { code: "002827", market: 0, name: "高争民爆" },
   { code: "000595", market: 0, name: "新能股份" },
+  { code: "002354", market: 0, name: "天娱数科" },
   { code: "600396", market: 1, name: "华电辽能" },
+  { code: "600468", market: 1, name: "百利电气" },
+  { code: "002879", market: 0, name: "长缆科技" },
+  { code: "001208", market: 0, name: "华菱线缆" },
+  { code: "002366", market: 0, name: "融发核电" },
+  { code: "603011", market: 1, name: "合锻智能" },
+  { code: "002896", market: 0, name: "中大力德" },
+  { code: "003001", market: 0, name: "中岩大地" },
+  { code: "600664", market: 1, name: "哈药股份" },
+  { code: "605179", market: 1, name: "一鸣食品" },
+  { code: "003032", market: 0, name: "传智教育" },
+  { code: "001258", market: 0, name: "立新能源" },
+  { code: "002882", market: 0, name: "金龙羽" },
   { code: "603221", market: 1, name: "爱丽家居" },
-  { code: "000938", market: 0, name: "紫光股份" },
-  { code: "002837", market: 0, name: "英维克" },
+  { code: "588200", market: 1, name: "科创芯片ETF" },
+  { code: "688825", market: 1, name: "长鑫科技" },
   { code: "000636", market: 0, name: "风华高科" },
-  { code: "002371", market: 0, name: "北方华创" },
-  { code: "600183", market: 1, name: "生益科技" },
+  { code: "002384", market: 0, name: "东山精密" },
+  { code: "600667", market: 1, name: "太极实业" },
+  { code: "603986", market: 1, name: "兆易创新" },
+  { code: "002156", market: 0, name: "通富微电" },
+  { code: "001309", market: 0, name: "德明利" },
+];
+
+const ETF_STOCKS: Stock[] = [
+  { code: "603986", market: 1, name: "兆易创新" },
+  { code: "002156", market: 0, name: "通富微电" },
   { code: "001309", market: 0, name: "德明利" },
   { code: "002384", market: 0, name: "东山精密" },
+  { code: "000636", market: 0, name: "风华高科" },
+  { code: "000938", market: 0, name: "紫光股份" },
+  { code: "588060", market: 1, name: "科创50ETF" },
+  { code: "600584", market: 1, name: "长电科技" },
+  { code: "002837", market: 0, name: "英维克" },
+  { code: "600176", market: 1, name: "中国巨石" },
   { code: "601869", market: 1, name: "长飞光纤" },
   { code: "000725", market: 0, name: "京东方A" },
-  { code: "300308", market: 0, name: "中际旭创" },
+  { code: "603256", market: 1, name: "宏和科技" },
+  { code: "600183", market: 1, name: "生益科技" },
+  { code: "301308", market: 0, name: "江波龙" },
+  { code: "002475", market: 0, name: "立讯精密" },
   { code: "002409", market: 0, name: "雅克科技" },
-  { code: "600664", market: 1, name: "哈药股份" },
-  { code: "002156", market: 0, name: "通富微电" },
-  { code: "600584", market: 1, name: "长电科技" },
-  { code: "603986", market: 1, name: "兆易创新" },
-  { code: "603137", market: 1, name: "恒尚节能" },
-  { code: "603580", market: 1, name: "艾艾精工" },
-  { code: "002265", market: 0, name: "建设工业" },
+  { code: "600206", market: 1, name: "有研新材" },
+  { code: "000977", market: 0, name: "浪潮信息" },
+  { code: "600703", market: 1, name: "三安光电" },
+  { code: "600487", market: 1, name: "亨通光电" },
+  { code: "000657", market: 0, name: "中钨高新" },
+  { code: "002859", market: 0, name: "洁美科技" },
+  { code: "002281", market: 0, name: "光迅科技" },
+  { code: "600460", market: 1, name: "士兰微" },
+  { code: "603259", market: 1, name: "药明康德" },
+  { code: "600869", market: 1, name: "远东股份" },
+  { code: "002600", market: 0, name: "领益智造" },
+  { code: "002008", market: 0, name: "大族激光" },
   { code: "002428", market: 0, name: "云南锗业" },
+  { code: "601991", market: 1, name: "大唐发电" },
+  { code: "002916", market: 0, name: "深南电路" },
+  { code: "601179", market: 1, name: "中国西电" },
 ];
+const DEFAULT_WATCH_GROUPS: Record<WatchGroupKey, Stock[]> = { main: DEFAULT_STOCKS, etf: ETF_STOCKS };
 const DEFAULT_PINNED = ["101.CNOW", "102.883421", "102.883418", "1.000001", "102.883958", "0.399001", "100.KS11"];
-const WATCHLIST_KEY = "xinghai_watchlist_v2";
-const PINNED_KEY = "xinghai_pinned_v2";
+const WATCHLIST_GROUPS_KEY = "xinghai_watchlist_groups_v3";
+const ACTIVE_WATCH_GROUP_KEY = "xinghai_watch_group_v3";
+const PINNED_KEY = "xinghai_pinned_v3";
 const QUOTES_CACHE_KEY = "xinghai_quotes_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
@@ -612,7 +649,8 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 
 export function StockTerminal() {
   const [page, setPage] = useState<PageKey>("watch");
-  const [watchlist, setWatchlist] = useState<Stock[]>(DEFAULT_STOCKS);
+  const [watchGroup, setWatchGroup] = useState<WatchGroupKey>("main");
+  const [watchGroups, setWatchGroups] = useState<Record<WatchGroupKey, Stock[]>>(DEFAULT_WATCH_GROUPS);
   const [pinned, setPinned] = useState<Set<string>>(new Set(DEFAULT_PINNED));
   const [hydrated, setHydrated] = useState(false);
   const [activeKey, setActiveKey] = useState("1.000001");
@@ -649,16 +687,40 @@ export function StockTerminal() {
   const quotesRef = useRef<Record<string, Quote>>({});
   const speedsRef = useRef<Record<string, number>>({});
   const turnoverRef = useRef<MarketTurnover | null>(null);
+  const watchlist = watchGroups[watchGroup];
+  const quoteUniverse = useMemo(() => {
+    const unique = new Map<string, Stock>();
+    [...DEFAULT_STOCKS.slice(0, 7), ...watchlist].forEach((stock) => unique.set(keyOf(stock), stock));
+    return Array.from(unique.values());
+  }, [watchlist]);
+
+  const updateWatchlist = useCallback((update: Stock[] | ((current: Stock[]) => Stock[])) => {
+    setWatchGroups((current) => {
+      const currentRows = current[watchGroup];
+      const nextRows = typeof update === "function" ? update(currentRows) : update;
+      return nextRows === currentRows ? current : { ...current, [watchGroup]: nextRows };
+    });
+  }, [watchGroup]);
+
+  const switchWatchGroup = useCallback((nextGroup: WatchGroupKey) => {
+    setWatchGroup(nextGroup);
+    setActiveKey((current) => watchGroups[nextGroup].some((stock) => keyOf(stock) === current) ? current : (watchGroups[nextGroup][0] ? keyOf(watchGroups[nextGroup][0]) : ""));
+    setMenu(null);
+  }, [watchGroups]);
 
   useEffect(() => {
     try {
-      const storedStocks = JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "null");
+      const storedGroups = JSON.parse(localStorage.getItem(WATCHLIST_GROUPS_KEY) || "null");
+      const storedGroup = localStorage.getItem(ACTIVE_WATCH_GROUP_KEY);
       const storedPinned = JSON.parse(localStorage.getItem(PINNED_KEY) || "null");
       const storedQuotes = JSON.parse(localStorage.getItem(QUOTES_CACHE_KEY) || "null");
-      if (Array.isArray(storedStocks) && storedStocks.length) {
-        setWatchlist(storedStocks);
-        setActiveKey(storedStocks.some((stock) => keyOf(stock) === "1.000001") ? "1.000001" : keyOf(storedStocks[0]));
-      }
+      const nextGroups = storedGroups && Array.isArray(storedGroups.main) && Array.isArray(storedGroups.etf)
+        ? { main: storedGroups.main, etf: storedGroups.etf } : DEFAULT_WATCH_GROUPS;
+      const nextGroup: WatchGroupKey = storedGroup === "etf" ? "etf" : "main";
+      setWatchGroups(nextGroups);
+      setWatchGroup(nextGroup);
+      const rows = nextGroups[nextGroup];
+      setActiveKey(rows.some((stock: Stock) => keyOf(stock) === "1.000001") ? "1.000001" : (rows[0] ? keyOf(rows[0]) : ""));
       if (Array.isArray(storedPinned)) setPinned(new Set(storedPinned));
       if (storedQuotes?.items && typeof storedQuotes.items === "object" && Date.now() - Number(storedQuotes.updatedAt || 0) < 12 * 60 * 60 * 1_000) {
         setQuotes(storedQuotes.items);
@@ -669,9 +731,10 @@ export function StockTerminal() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
+    localStorage.setItem(WATCHLIST_GROUPS_KEY, JSON.stringify(watchGroups));
+    localStorage.setItem(ACTIVE_WATCH_GROUP_KEY, watchGroup);
     localStorage.setItem(PINNED_KEY, JSON.stringify(Array.from(pinned)));
-  }, [hydrated, pinned, watchlist]);
+  }, [hydrated, pinned, watchGroup, watchGroups]);
 
   useEffect(() => {
     if (!hydrated || !Object.keys(quotes).length) return;
@@ -694,7 +757,7 @@ export function StockTerminal() {
     ];
   }, [pinned, quotes, speeds4m, watchSort, watchlist]);
 
-  const activeStock = watchlist.find((stock) => keyOf(stock) === activeKey) || watchlist[0] || null;
+  const activeStock = quoteUniverse.find((stock) => keyOf(stock) === activeKey) || watchlist[0] || null;
   const activeDetail = detail && keyOf(detail.quote) === activeKey ? detail : null;
   const activeQuote = activeDetail?.quote || (activeStock ? quotes[keyOf(activeStock)] : null);
 
@@ -793,7 +856,7 @@ export function StockTerminal() {
   }, [updateConnection]);
 
   const refreshQuotes = useCallback(async (silent = false, scope: "all" | "priority" | "overseas" = "all") => {
-    if (!watchlist.length) return;
+    if (!quoteUniverse.length) return;
     if (silent && quoteBusy.current[scope]) return;
     const requestId = ++quoteRequest.current[scope];
     quoteBusy.current[scope] = true;
@@ -801,11 +864,11 @@ export function StockTerminal() {
     try {
       const priorityKeys = new Set([activeKey, "1.000001", "0.399001", ...Array.from(pinned)]);
       const requestedStocks = scope === "all"
-        ? watchlist.filter((stock) => stock.market === 0 || stock.market === 1)
+        ? quoteUniverse.filter((stock) => stock.market === 0 || stock.market === 1)
         : scope === "overseas"
-          ? watchlist.filter((stock) => stock.market === 100 || stock.market === 101)
-          : watchlist.filter((stock) => priorityKeys.has(keyOf(stock))).slice(0, 14);
-      if (scope === "overseas") requestedStocks.push(...watchlist.filter((stock) => stock.market === 102));
+          ? quoteUniverse.filter((stock) => stock.market === 100 || stock.market === 101)
+          : quoteUniverse.filter((stock) => priorityKeys.has(keyOf(stock))).slice(0, 14);
+      if (scope === "overseas") requestedStocks.push(...quoteUniverse.filter((stock) => stock.market === 102));
       if (!requestedStocks.length) return;
       const secids = requestedStocks.map(keyOf).join(",");
       const data = scope === "overseas"
@@ -816,7 +879,7 @@ export function StockTerminal() {
       setQuotes((current) => {
         const next = { ...current };
         data.items.forEach((item) => {
-          const local = watchlist.find((stock) => keyOf(stock) === keyOf(item));
+          const local = quoteUniverse.find((stock) => keyOf(stock) === keyOf(item));
           next[keyOf(item)] = { ...item, name: item.name || local?.name || item.code };
         });
         return next;
@@ -831,12 +894,12 @@ export function StockTerminal() {
       if (requestId === quoteRequest.current[scope]) quoteBusy.current[scope] = false;
       if (!silent) setRefreshing(false);
     }
-  }, [activeKey, markFeedFailure, pinned, updateConnection, updateRollingSpeeds, watchlist]);
+  }, [activeKey, markFeedFailure, pinned, quoteUniverse, updateConnection, updateRollingSpeeds]);
 
   useEffect(() => {
     refreshQuotes(false, "all");
     refreshQuotes(true, "overseas");
-  }, [watchlist.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [watchGroup, watchlist.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let timer = 0;
@@ -870,10 +933,10 @@ export function StockTerminal() {
   }, [pollingPaused, refreshQuotes]);
 
   const refreshSpeeds = useCallback(async () => {
-    if (!watchlist.length || speedBusy.current) return;
+    if (!quoteUniverse.length || speedBusy.current) return;
     speedBusy.current = true;
     try {
-      const secids = watchlist.map(keyOf).join(",");
+      const secids = quoteUniverse.map(keyOf).join(",");
       const data = await fetchJson<{ items: Speed4[]; meta: MarketMeta }>(`/api/market?action=speeds&secids=${encodeURIComponent(secids)}`, 20_000);
       setSpeeds4m((current) => {
         const next = { ...current };
@@ -883,7 +946,7 @@ export function StockTerminal() {
       updateConnection(data.meta, "speeds");
     } catch { markFeedFailure("speeds", Object.keys(speedsRef.current).length > 0); }
     finally { speedBusy.current = false; }
-  }, [markFeedFailure, updateConnection, watchlist]);
+  }, [markFeedFailure, quoteUniverse, updateConnection]);
 
   useEffect(() => {
     const initial = window.setTimeout(refreshSpeeds, 1_500);
@@ -913,7 +976,7 @@ export function StockTerminal() {
   }, [pollingPaused, refreshMarketTurnover]);
 
   const refreshDetail = useCallback(async (silent = false) => {
-    const stock = watchlist.find((item) => keyOf(item) === activeKey) || watchlist[0];
+    const stock = quoteUniverse.find((item) => keyOf(item) === activeKey) || watchlist[0];
     if (!stock) { setDetail(null); return; }
     const stockKey = keyOf(stock);
     if (detailBusy.current === stockKey) return;
@@ -942,7 +1005,7 @@ export function StockTerminal() {
     } finally {
       if (requestId === detailRequest.current) detailBusy.current = null;
     }
-  }, [activeKey, chartMode, markFeedFailure, updateConnection, watchlist]);
+  }, [activeKey, chartMode, markFeedFailure, quoteUniverse, updateConnection, watchlist]);
 
   useEffect(() => {
     detailRequest.current += 1;
@@ -1013,11 +1076,11 @@ export function StockTerminal() {
 
   const addStock = useCallback((stock: Stock) => {
     const key = keyOf(stock);
-    setWatchlist((current) => current.some((item) => keyOf(item) === key) ? current : [...current, stock]);
+    updateWatchlist((current) => current.some((item) => keyOf(item) === key) ? current : [...current, stock]);
     selectStock(key);
     setQuery(""); setSuggestions([]); setSearchMessage("");
     setNotice(watchlist.some((item) => keyOf(item) === key) ? "已在自选列表中" : `已添加 ${stock.name}`);
-  }, [selectStock, watchlist]);
+  }, [selectStock, updateWatchlist, watchlist]);
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -1040,7 +1103,7 @@ export function StockTerminal() {
   };
 
   const removeStock = (key: string) => {
-    setWatchlist((current) => {
+    updateWatchlist((current) => {
       const next = current.filter((stock) => keyOf(stock) !== key);
       if (activeKey === key) setActiveKey(next[0] ? keyOf(next[0]) : "");
       return next;
@@ -1050,7 +1113,7 @@ export function StockTerminal() {
   };
 
   const moveStock = (key: string, target: "top" | "bottom") => {
-    setWatchlist((current) => {
+    updateWatchlist((current) => {
       const item = current.find((stock) => keyOf(stock) === key);
       if (!item) return current;
       const rest = current.filter((stock) => keyOf(stock) !== key);
@@ -1067,7 +1130,7 @@ export function StockTerminal() {
   const dropOn = (targetKey: string) => {
     const sourceKey = dragged.current;
     if (!sourceKey || sourceKey === targetKey) return;
-    setWatchlist((current) => {
+    updateWatchlist((current) => {
       const next = [...current];
       const from = next.findIndex((stock) => keyOf(stock) === sourceKey);
       const to = next.findIndex((stock) => keyOf(stock) === targetKey);
@@ -1177,6 +1240,10 @@ export function StockTerminal() {
       {page === "watch" && <div className="watch-layout" id="main-content">
         <aside className={`watch-sidebar panel ${compactList ? "compact-list" : ""}`} title="拖动右下角可调整宽高">
           <div className="panel-title"><div><span>自选列表</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
+          <div className="watch-groups" role="tablist" aria-label="自选股分组">
+            <button type="button" role="tab" aria-selected={watchGroup === "main"} className={watchGroup === "main" ? "active" : ""} onClick={() => switchWatchGroup("main")}><span>自选股</span><em>{watchGroups.main.length}</em></button>
+            <button type="button" role="tab" aria-selected={watchGroup === "etf"} className={watchGroup === "etf" ? "active" : ""} onClick={() => switchWatchGroup("etf")}><span>ETF组</span><em>{watchGroups.etf.length}</em></button>
+          </div>
           <div className="watch-columns"><span>名称 / 代码</span><span>最新 / 涨幅</span><span>4分涨速</span></div>
           <div className="watch-sortbar" aria-label="自选股临时排序">
             {([ ["manual", "手动"], ["change", "涨幅"], ["speed", "4分"], ["amount", "成交额"] ] as Array<[WatchSort, string]>).map(([key, label]) => <button type="button" key={key} className={watchSort === key ? "active" : ""} aria-pressed={watchSort === key} onClick={() => setWatchSort(key)}>{label}</button>)}

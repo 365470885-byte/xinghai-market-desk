@@ -31,6 +31,8 @@ test("server-renders the market research desk", async () => {
   const html = await response.text();
   assert.match(html, /<title>星辰大海 · 市场研究台<\/title>/);
   assert.match(html, />自选行情<\/button>/);
+  assert.match(html, />自选股<\/span>/);
+  assert.match(html, />ETF组<\/span>/);
   assert.doesNotMatch(html, />板块雷达<\/button>/);
   assert.match(html, />资金流向<\/button>/);
   assert.match(html, /class="skip-link" href="#main-content"/);
@@ -64,6 +66,11 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /setChartDetail\(activeDetail\)/);
   assert.doesNotMatch(terminal, />(?:MARKET INTELLIGENCE|WATCHLIST|PRICE ACTION|MARKET PULSE|DATA HEALTH|INTRADAY MAIN FLOW|SECTOR FLOW|TOP 5)</);
   assert.match(terminal, /QUOTES_CACHE_KEY/);
+  assert.match(terminal, /WATCHLIST_GROUPS_KEY/);
+  const primaryList = terminal.match(/const DEFAULT_STOCKS: Stock\[\] = \[(.*?)\];\s*const ETF_STOCKS/s)?.[1] ?? "";
+  const etfList = terminal.match(/const ETF_STOCKS: Stock\[\] = \[(.*?)\];\s*const DEFAULT_WATCH_GROUPS/s)?.[1] ?? "";
+  assert.equal(primaryList.match(/\{ code:/g)?.length, 39);
+  assert.equal(etfList.match(/\{ code:/g)?.length, 33);
   assert.match(terminal, /连续报价滚动计算/);
   assert.match(terminal, /没有找到匹配的沪深股票/);
   assert.match(terminal, /if \(!query\.trim\(\)\)/);

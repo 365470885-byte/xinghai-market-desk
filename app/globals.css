@@ -599,6 +599,11 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outli
 .panel-actions { display: flex; align-items: center; gap: 7px; }
 .panel-actions button { min-height: 26px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 3px; background: #f7fafc; color: #506577; cursor: pointer; font-size: 10px; font-weight: 650; }
 .panel-actions em { min-width: 29px; height: 23px; display: grid; place-items: center; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--muted); font: normal 600 11px/1 var(--font-data); }
+.watch-groups { min-height: 37px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--line); background: #fbfcfd; }
+.watch-groups button { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #617486; cursor: pointer; font-size: 10.5px; font-weight: 680; }
+.watch-groups button:hover { background: #eef4f8; color: #264a64; }
+.watch-groups button.active { border-color: #bed3e2; background: var(--blue-soft); color: #075f98; }
+.watch-groups em { min-width: 22px; height: 18px; display: grid; place-items: center; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.7); color: inherit; font: normal 650 9px/1 var(--font-data); }
 .watch-columns { height: 30px; grid-template-columns: minmax(0, 1fr) 82px 68px; }
 .watch-sortbar { height: 28px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; padding: 3px 5px; border-bottom: 1px solid var(--line); background: #fbfcfd; }
 .watch-sortbar button { border: 0; border-radius: 2px; background: transparent; color: #617486; cursor: pointer; font-size: 9.5px; font-weight: 650; }
