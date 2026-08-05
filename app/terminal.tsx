@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WatchlistImportDialog, type ImportedStock } from "./watchlist-import";
 
 type PageKey = "watch" | "capital" | "rankings";
 type ChartMode = "time" | "day";
@@ -664,6 +665,7 @@ export function StockTerminal() {
   const [refreshing, setRefreshing] = useState(false);
   const [pollingPaused, setPollingPaused] = useState(false);
   const [compactList, setCompactList] = useState(true);
+  const [screenshotImportOpen, setScreenshotImportOpen] = useState(false);
   const [watchSort, setWatchSort] = useState<WatchSort>("manual");
   const [railOpen, setRailOpen] = useState(false);
   const [notice, setNotice] = useState("");
@@ -1082,6 +1084,20 @@ export function StockTerminal() {
     setNotice(watchlist.some((item) => keyOf(item) === key) ? "已在自选列表中" : `已添加 ${stock.name}`);
   }, [selectStock, updateWatchlist, watchlist]);
 
+  const importStocks = useCallback((stocks: ImportedStock[]) => {
+    const existing = new Set(watchlist.map(keyOf));
+    const additions = stocks.filter((stock) => !existing.has(keyOf(stock)));
+    updateWatchlist((current) => {
+      const keys = new Set(current.map(keyOf));
+      return [...current, ...stocks.filter((stock) => !keys.has(keyOf(stock)))];
+    });
+    if (additions[0]) selectStock(keyOf(additions[0]));
+    setScreenshotImportOpen(false);
+    setNotice(additions.length ? `已从截图添加 ${additions.length} 只股票` : "识别到的股票已在当前分组中");
+  }, [selectStock, updateWatchlist, watchlist]);
+
+  const closeScreenshotImport = useCallback(() => setScreenshotImportOpen(false), []);
+
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
     const value = query.trim();
@@ -1239,7 +1255,7 @@ export function StockTerminal() {
 
       {page === "watch" && <div className="watch-layout" id="main-content">
         <aside className={`watch-sidebar panel ${compactList ? "compact-list" : ""}`} title="拖动右下角可调整宽高">
-          <div className="panel-title"><div><span>自选列表</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
+          <div className="panel-title"><div><span>自选列表</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" className="screenshot-import-button" onClick={() => setScreenshotImportOpen(true)}>上传截图</button><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
           <div className="watch-groups" role="tablist" aria-label="自选股分组">
             <button type="button" role="tab" aria-selected={watchGroup === "main"} className={watchGroup === "main" ? "active" : ""} onClick={() => switchWatchGroup("main")}><span>自选股</span><em>{watchGroups.main.length}</em></button>
             <button type="button" role="tab" aria-selected={watchGroup === "etf"} className={watchGroup === "etf" ? "active" : ""} onClick={() => switchWatchGroup("etf")}><span>ETF组</span><em>{watchGroups.etf.length}</em></button>
@@ -1300,6 +1316,7 @@ export function StockTerminal() {
         <button type="button" role="menuitem" onClick={() => moveStock(menu.key, "bottom")}><span aria-hidden="true">↓</span>移至底部</button>
         <button type="button" role="menuitem" className="danger" onClick={() => removeStock(menu.key)}><span aria-hidden="true">×</span>删除自选</button>
       </div>}
+      <WatchlistImportDialog open={screenshotImportOpen} groupLabel={watchGroup === "main" ? "自选股" : "ETF组"} onClose={closeScreenshotImport} onImport={importStocks} />
       {notice && <div className="toast" role="status" aria-live="polite">{notice}</div>}
     </div>
   );

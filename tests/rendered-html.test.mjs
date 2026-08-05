@@ -33,6 +33,7 @@ test("server-renders the market research desk", async () => {
   assert.match(html, />自选行情<\/button>/);
   assert.match(html, />自选股<\/span>/);
   assert.match(html, />ETF组<\/span>/);
+  assert.match(html, />上传截图<\/button>/);
   assert.doesNotMatch(html, />板块雷达<\/button>/);
   assert.match(html, />资金流向<\/button>/);
   assert.match(html, /class="skip-link" href="#main-content"/);
@@ -42,10 +43,11 @@ test("server-renders the market research desk", async () => {
 });
 
 test("keeps the visual and accessibility safeguards in source", async () => {
-  const [page, layout, terminal, css, marketRoute, specialRoute, vercelConfig] = await Promise.all([
+  const [page, layout, terminal, screenshotImport, css, marketRoute, specialRoute, vercelConfig] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/terminal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/watchlist-import.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/api/market/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/special/route.ts", import.meta.url), "utf8"),
@@ -71,6 +73,11 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   const etfList = terminal.match(/const ETF_STOCKS: Stock\[\] = \[(.*?)\];\s*const DEFAULT_WATCH_GROUPS/s)?.[1] ?? "";
   assert.equal(primaryList.match(/\{ code:/g)?.length, 39);
   assert.equal(etfList.match(/\{ code:/g)?.length, 33);
+  assert.match(screenshotImport, /const MAX_IMAGES = 5/);
+  assert.match(screenshotImport, /图片只在本机识别，不会上传服务器/);
+  assert.match(screenshotImport, /await import\("tesseract\.js"\)/);
+  assert.match(screenshotImport, /extractStockCodes\(result\.data\.text\)/);
+  assert.match(screenshotImport, /action=search&q=/);
   assert.match(terminal, /连续报价滚动计算/);
   assert.match(terminal, /没有找到匹配的沪深股票/);
   assert.match(terminal, /if \(!query\.trim\(\)\)/);
