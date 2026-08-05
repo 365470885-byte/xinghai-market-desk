@@ -6,6 +6,7 @@ export type ImportedStock = { code: string; market: number; name: string };
 
 type UploadItem = { id: string; file: File; previewUrl: string };
 type ImportPhase = "select" | "recognizing" | "review";
+type AddSource = "select" | "paste";
 type OcrWorker = { terminate: () => Promise<unknown> };
 
 const MAX_IMAGES = 5;
@@ -121,7 +122,7 @@ export function WatchlistImportDialog({
 }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [phase, setPhase] = useState<ImportPhase>("select");
-  const [message, setMessage] = useState("请选择同花顺自选股截图");
+  const [message, setMessage] = useState("请选择、拖入或粘贴同花顺自选股截图");
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<ImportedStock[]>([]);
@@ -146,7 +147,7 @@ export function WatchlistImportDialog({
     workerRef.current = null;
     clearItems();
     setPhase("select");
-    setMessage("请选择同花顺自选股截图");
+    setMessage("请选择、拖入或粘贴同花顺自选股截图");
     setError("");
     setProgress(0);
     setResults([]);
@@ -154,6 +155,38 @@ export function WatchlistImportDialog({
   }, [clearItems]);
 
   const closeDialog = useCallback(() => { reset(); onClose(); }, [onClose, reset]);
+
+  const addFiles = useCallback((incoming: File[], source: AddSource = "select") => {
+    if (phase === "recognizing") return;
+    setError("");
+    const currentItems = itemsRef.current;
+    const seen = new Set(currentItems.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
+    const valid = incoming.filter((file) => {
+      const signature = `${file.name}:${file.size}:${file.lastModified}`;
+      if (!file.type.startsWith("image/") || file.size > MAX_IMAGE_BYTES || seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    });
+    const capacity = MAX_IMAGES - currentItems.length;
+    const accepted = valid.slice(0, Math.max(0, capacity));
+    if (incoming.some((file) => !file.type.startsWith("image/"))) setError("剪贴板或所选内容中包含非图片文件，仅支持图片");
+    else if (incoming.some((file) => file.size > MAX_IMAGE_BYTES)) setError("单张图片不能超过 15MB");
+    else if (valid.length > capacity) setError("最多添加 5 张图片，超出的图片未加入");
+    else if (!valid.length && incoming.length) setError("这张图片已经添加，或图片格式不受支持");
+    if (!accepted.length) return;
+    const nextItems = [...currentItems, ...accepted.map((file, index) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}-${currentItems.length + index}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }))];
+    itemsRef.current = nextItems;
+    setItems(nextItems);
+    setPhase("select");
+    setResults([]);
+    setSelected(new Set());
+    const total = nextItems.length;
+    setMessage(source === "paste" ? `已从剪贴板粘贴 ${accepted.length} 张图片，共 ${total} 张` : `已选择 ${total} 张图片`);
+  }, [phase]);
 
   useEffect(() => {
     if (!open) return;
@@ -169,6 +202,26 @@ export function WatchlistImportDialog({
     };
   }, [closeDialog, open]);
 
+  useEffect(() => {
+    if (!open || phase === "recognizing") return;
+    const onPaste = (event: ClipboardEvent) => {
+      const clipboard = event.clipboardData;
+      if (!clipboard) return;
+      const itemFiles = Array.from(clipboard.items)
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+      const imageFiles = itemFiles.length
+        ? itemFiles
+        : Array.from(clipboard.files).filter((file) => file.type.startsWith("image/"));
+      if (!imageFiles.length) return;
+      event.preventDefault();
+      addFiles(imageFiles, "paste");
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [addFiles, open, phase]);
+
   useEffect(() => () => {
     runRef.current += 1;
     workerRef.current?.terminate().catch(() => undefined);
@@ -176,27 +229,6 @@ export function WatchlistImportDialog({
   }, []);
 
   if (!open) return null;
-
-  const addFiles = (incoming: File[]) => {
-    setError("");
-    const existing = new Set(items.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
-    const valid = incoming.filter((file) => file.type.startsWith("image/") && file.size <= MAX_IMAGE_BYTES && !existing.has(`${file.name}:${file.size}:${file.lastModified}`));
-    const capacity = MAX_IMAGES - items.length;
-    const accepted = valid.slice(0, Math.max(0, capacity));
-    if (incoming.some((file) => !file.type.startsWith("image/"))) setError("仅支持 JPG、PNG、WEBP 等图片格式");
-    else if (incoming.some((file) => file.size > MAX_IMAGE_BYTES)) setError("单张图片不能超过 15MB");
-    else if (valid.length > capacity) setError("最多上传 5 张图片，超出的图片未加入");
-    if (!accepted.length) return;
-    setItems((current) => [...current, ...accepted.map((file) => ({
-      id: `${file.name}-${file.size}-${file.lastModified}`,
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }))]);
-    setPhase("select");
-    setResults([]);
-    setSelected(new Set());
-    setMessage(`已选择 ${items.length + accepted.length} 张图片`);
-  };
 
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     addFiles(Array.from(event.target.files || []));
@@ -213,7 +245,8 @@ export function WatchlistImportDialog({
       const target = current.find((item) => item.id === id);
       if (target) URL.revokeObjectURL(target.previewUrl);
       const next = current.filter((item) => item.id !== id);
-      setMessage(next.length ? `已选择 ${next.length} 张图片` : "请选择同花顺自选股截图");
+      itemsRef.current = next;
+      setMessage(next.length ? `已选择 ${next.length} 张图片` : "请选择、拖入或粘贴同花顺自选股截图");
       return next;
     });
     setError("");
@@ -300,7 +333,7 @@ export function WatchlistImportDialog({
   return <div className="import-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && phase !== "recognizing") closeDialog(); }}>
     <section className="import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-title" aria-describedby="import-description">
       <header className="import-header">
-        <div><strong id="import-title">从截图导入股票</strong><span id="import-description">识别后加入“{groupLabel}”，最多上传 5 张</span></div>
+        <div><strong id="import-title">从截图导入股票</strong><span id="import-description">识别后加入“{groupLabel}”，上传与粘贴合计最多 5 张</span></div>
         <button ref={closeRef} type="button" className="import-close" onClick={closeDialog} aria-label="关闭截图导入">×</button>
       </header>
 
@@ -308,7 +341,8 @@ export function WatchlistImportDialog({
         <label className={`import-dropzone ${phase === "recognizing" ? "disabled" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
           <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={onFileChange} disabled={phase === "recognizing" || items.length >= MAX_IMAGES} />
           <span className="import-mark" aria-hidden="true">＋</span>
-          <strong>{items.length >= MAX_IMAGES ? "已达到 5 张上限" : "选择或拖入同花顺截图"}</strong>
+          <strong>{items.length >= MAX_IMAGES ? "已达到 5 张上限" : "选择、拖入或粘贴同花顺截图"}</strong>
+          <small className="import-paste-hint"><kbd>Ctrl+V</kbd> 或 <kbd>⌘V</kbd> 可直接粘贴剪贴板图片</small>
           <small>建议使用完整长截图；图片只在本机识别，不会上传服务器</small>
         </label>
 

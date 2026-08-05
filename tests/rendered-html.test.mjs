@@ -75,6 +75,10 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.equal(etfList.match(/\{ code:/g)?.length, 33);
   assert.match(screenshotImport, /const MAX_IMAGES = 5/);
   assert.match(screenshotImport, /图片只在本机识别，不会上传服务器/);
+  assert.match(screenshotImport, /window\.addEventListener\("paste", onPaste\)/);
+  assert.match(screenshotImport, /clipboard\.items/);
+  assert.match(screenshotImport, /已从剪贴板粘贴/);
+  assert.match(screenshotImport, /Ctrl\+V/);
   assert.match(screenshotImport, /await import\("tesseract\.js"\)/);
   assert.match(screenshotImport, /extractStockCodes\(result\.data\.text\)/);
   assert.match(screenshotImport, /action=search&q=/);
