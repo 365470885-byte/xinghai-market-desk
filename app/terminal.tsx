@@ -119,6 +119,7 @@ const WATCHLIST_GROUPS_KEY = "xinghai_watchlist_groups_v3";
 const ACTIVE_WATCH_GROUP_KEY = "xinghai_watch_group_v3";
 const PINNED_KEY = "xinghai_pinned_v3";
 const QUOTES_CACHE_KEY = "xinghai_quotes_cache_v1";
+const CAPITAL_CACHE_KEY = "xinghai_capital_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
   sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行",
@@ -458,7 +459,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
     grid(ctx, width, height, pad);
     const plotW = width - pad.l - pad.r;
     const plotH = height - pad.t - pad.b;
-    ctx.font = '500 12px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif';
+    ctx.font = '500 12px "Noto Sans SC Variable", "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = "#6f7f91";
     if (!detail || (mode === "time" ? !detail.trends.length : !detail.klines.length)) {
       ctx.textAlign = "center";
@@ -632,7 +633,7 @@ function FlowChart({ rows }: { rows: CapitalData["flow"] }) {
     ctx.lineTo(x(values.length - 1), height - pad.b); ctx.lineTo(pad.l, height - pad.b); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
     ctx.beginPath(); values.forEach((value, index) => index ? ctx.lineTo(x(index), y(value)) : ctx.moveTo(x(index), y(value)));
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
-    ctx.fillStyle = "#657789"; ctx.font = '500 12px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif'; ctx.textAlign = "right";
+    ctx.fillStyle = "#657789"; ctx.font = '500 12px "Noto Sans SC Variable", "Noto Sans SC", "Microsoft YaHei", sans-serif'; ctx.textAlign = "right";
     ctx.fillText(`${(maxAbs / 1e8).toFixed(0)}亿`, pad.l - 8, pad.t + 4); ctx.fillText("0", pad.l - 8, y(0) + 4); ctx.fillText(`${(-maxAbs / 1e8).toFixed(0)}亿`, pad.l - 8, height - pad.b);
     ctx.textAlign = "center";
     [0, Math.floor(rows.length / 2), rows.length - 1].forEach((index) => rows[index] && ctx.fillText(rows[index].time.slice(11, 16), x(index), height - 10));
@@ -665,6 +666,8 @@ export function StockTerminal() {
   const [refreshing, setRefreshing] = useState(false);
   const [pollingPaused, setPollingPaused] = useState(false);
   const [compactList, setCompactList] = useState(true);
+  const [watchSelectionMode, setWatchSelectionMode] = useState(false);
+  const [selectedWatchKeys, setSelectedWatchKeys] = useState<Set<string>>(new Set());
   const [screenshotImportOpen, setScreenshotImportOpen] = useState(false);
   const [watchSort, setWatchSort] = useState<WatchSort>("manual");
   const [railOpen, setRailOpen] = useState(false);
@@ -707,6 +710,7 @@ export function StockTerminal() {
   const switchWatchGroup = useCallback((nextGroup: WatchGroupKey) => {
     setWatchGroup(nextGroup);
     setActiveKey((current) => watchGroups[nextGroup].some((stock) => keyOf(stock) === current) ? current : (watchGroups[nextGroup][0] ? keyOf(watchGroups[nextGroup][0]) : ""));
+    setSelectedWatchKeys(new Set());
     setMenu(null);
   }, [watchGroups]);
 
@@ -758,6 +762,14 @@ export function StockTerminal() {
       ...order(watchlist.filter((stock) => !pinned.has(keyOf(stock)))),
     ];
   }, [pinned, quotes, speeds4m, watchSort, watchlist]);
+  const selectedWatchCount = useMemo(
+    () => displayedStocks.reduce((count, stock) => count + (selectedWatchKeys.has(keyOf(stock)) ? 1 : 0), 0),
+    [displayedStocks, selectedWatchKeys],
+  );
+  const allDisplayedSelected = displayedStocks.length > 0 && selectedWatchCount === displayedStocks.length;
+  const selectedArePinned = selectedWatchCount > 0 && displayedStocks
+    .filter((stock) => selectedWatchKeys.has(keyOf(stock)))
+    .every((stock) => pinned.has(keyOf(stock)));
 
   const activeStock = quoteUniverse.find((stock) => keyOf(stock) === activeKey) || watchlist[0] || null;
   const activeDetail = detail && keyOf(detail.quote) === activeKey ? detail : null;
@@ -1139,8 +1151,45 @@ export function StockTerminal() {
   };
 
   const togglePin = (key: string) => {
-    setPinned((current) => { const next = new Set(current); next.has(key) ? next.delete(key) : next.add(key); return next; });
+    setPinned((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
     setMenu(null);
+  };
+
+  const toggleWatchSelection = (key: string) => {
+    setSelectedWatchKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedWatchKeys(allDisplayedSelected ? new Set() : new Set(displayedStocks.map(keyOf)));
+  };
+
+  const bulkTogglePin = () => {
+    if (!selectedWatchCount) return;
+    setPinned((current) => {
+      const next = new Set(current);
+      selectedWatchKeys.forEach((key) => selectedArePinned ? next.delete(key) : next.add(key));
+      return next;
+    });
+    setNotice(selectedArePinned ? `已取消置顶 ${selectedWatchCount} 只股票` : `已置顶 ${selectedWatchCount} 只股票`);
+  };
+
+  const bulkRemoveStocks = () => {
+    if (!selectedWatchCount || !window.confirm(`确定从当前分组删除选中的 ${selectedWatchCount} 只股票吗？`)) return;
+    const selected = new Set(selectedWatchKeys);
+    const remaining = watchlist.filter((stock) => !selected.has(keyOf(stock)));
+    updateWatchlist(remaining);
+    if (selected.has(activeKey)) setActiveKey(remaining[0] ? keyOf(remaining[0]) : "");
+    setPinned((current) => {
+      const next = new Set(current);
+      selected.forEach((key) => next.delete(key));
+      return next;
+    });
+    setSelectedWatchKeys(new Set());
+    setNotice(`已删除 ${selectedWatchCount} 只股票`);
   };
 
   const dropOn = (targetKey: string) => {
@@ -1255,31 +1304,37 @@ export function StockTerminal() {
 
       {page === "watch" && <div className="watch-layout" id="main-content">
         <aside className={`watch-sidebar panel ${compactList ? "compact-list" : ""}`} title="拖动右下角可调整宽高">
-          <div className="panel-title"><div><span>自选列表</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" className="screenshot-import-button" onClick={() => setScreenshotImportOpen(true)}>上传截图</button><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
+          <div className="panel-title"><div><span>自选列表</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" className="screenshot-import-button" onClick={() => setScreenshotImportOpen(true)}>上传截图</button><button type="button" className={watchSelectionMode ? "active" : ""} onClick={() => { setWatchSelectionMode((current) => !current); setSelectedWatchKeys(new Set()); setMenu(null); }} aria-pressed={watchSelectionMode}>{watchSelectionMode ? "完成" : "多选"}</button><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
           <div className="watch-groups" role="tablist" aria-label="自选股分组">
             <button type="button" role="tab" aria-selected={watchGroup === "main"} className={watchGroup === "main" ? "active" : ""} onClick={() => switchWatchGroup("main")}><span>自选股</span><em>{watchGroups.main.length}</em></button>
             <button type="button" role="tab" aria-selected={watchGroup === "etf"} className={watchGroup === "etf" ? "active" : ""} onClick={() => switchWatchGroup("etf")}><span>ETF组</span><em>{watchGroups.etf.length}</em></button>
           </div>
           <div className="watch-columns"><span>名称 / 代码</span><span>最新 / 涨幅</span><span>4分涨速</span></div>
-          <div className="watch-sortbar" aria-label="自选股临时排序">
+          {watchSelectionMode ? <div className="watch-bulkbar" aria-label="自选股批量操作">
+            <button type="button" className="select-all" onClick={toggleSelectAll} aria-pressed={allDisplayedSelected}>{allDisplayedSelected ? "取消全选" : "全选"}</button>
+            <span>已选 <strong>{selectedWatchCount}</strong></span>
+            <button type="button" onClick={bulkTogglePin} disabled={!selectedWatchCount}>{selectedArePinned ? "取消置顶" : "置顶"}</button>
+            <button type="button" className="bulk-delete" onClick={bulkRemoveStocks} disabled={!selectedWatchCount}>删除</button>
+          </div> : <div className="watch-sortbar" aria-label="自选股临时排序">
             {([ ["manual", "手动"], ["change", "涨幅"], ["speed", "4分"], ["amount", "成交额"] ] as Array<[WatchSort, string]>).map(([key, label]) => <button type="button" key={key} className={watchSort === key ? "active" : ""} aria-pressed={watchSort === key} onClick={() => setWatchSort(key)}>{label}</button>)}
-          </div>
+          </div>}
           <div className="watch-list">
             {displayedStocks.map((stock) => {
-              const key = keyOf(stock); const quote = quotes[key];
-              return <div key={key} draggable={watchSort === "manual"} onDragStart={() => { if (watchSort === "manual") dragged.current = key; }} onDragOver={(event) => { if (watchSort === "manual") event.preventDefault(); }} onDrop={() => { if (watchSort === "manual") dropOn(key); }}
-                className={`watch-row ${activeKey === key ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setMenu({ key, x: event.clientX, y: event.clientY }); }}>
-                <button type="button" className="watch-select" data-stock-key={key} aria-pressed={activeKey === key} onClick={() => selectStock(key)}>
+              const key = keyOf(stock); const quote = quotes[key]; const selected = selectedWatchKeys.has(key);
+              return <div key={key} draggable={!watchSelectionMode && watchSort === "manual"} onDragStart={() => { if (!watchSelectionMode && watchSort === "manual") dragged.current = key; }} onDragOver={(event) => { if (!watchSelectionMode && watchSort === "manual") event.preventDefault(); }} onDrop={() => { if (!watchSelectionMode && watchSort === "manual") dropOn(key); }}
+                className={`watch-row ${activeKey === key ? "active" : ""} ${selected ? "selected" : ""}`} onContextMenu={(event) => { event.preventDefault(); if (!watchSelectionMode) setMenu({ key, x: event.clientX, y: event.clientY }); }}>
+                <button type="button" className={`watch-select ${watchSelectionMode ? "selecting" : ""}`} data-stock-key={key} aria-pressed={watchSelectionMode ? selected : activeKey === key} aria-label={watchSelectionMode ? `${selected ? "取消选择" : "选择"} ${quote?.name || stock.name}` : undefined} onClick={() => watchSelectionMode ? toggleWatchSelection(key) : selectStock(key)}>
+                  {watchSelectionMode && <span className="watch-checkbox" aria-hidden="true">{selected ? "✓" : ""}</span>}
                   <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small><span>{stock.code}</span>{quote?.limitState && quote.sealedAmount ? <b className={`limit-badge ${quote.limitState}`}>{quote.limitState === "up" ? "涨停" : "跌停"}封单 {amount(quote.sealedAmount)}</b> : null}</small></span>
                   <span className="stock-quote"><strong>{number(quote?.price)}</strong><span className={tone(quote?.changePercent)}>{signed(quote?.changePercent)}</span></span>
                   <span className={`stock-speed ${tone(speeds4m[key])}`}>{signed(speeds4m[key])}</span>
                 </button>
-                <button type="button" className="row-menu" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ key, x: rect.right - 150, y: rect.bottom + 6 }); }} aria-label={`${stock.name} 操作`}>•••</button>
+                {!watchSelectionMode && <button type="button" className="row-menu" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ key, x: rect.right - 150, y: rect.bottom + 6 }); }} aria-label={`${stock.name} 操作`}>•••</button>}
               </div>;
             })}
             {!watchlist.length && <EmptyState title="自选列表为空" detail="在顶部搜索并添加股票" />}
           </div>
-          <div className="sidebar-hint"><span>{watchSort === "manual" ? "拖动排序 · 右键管理" : "临时排序 · 手动顺序已保留"}</span><span>右下角可缩放</span></div>
+          <div className="sidebar-hint"><span>{watchSelectionMode ? "点击股票勾选 · 支持全选与批量处理" : watchSort === "manual" ? "拖动排序 · 右键管理" : "临时排序 · 手动顺序已保留"}</span><span>右下角可缩放</span></div>
         </aside>
 
         <main className="research-main">
@@ -1493,18 +1548,62 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const dataRef = useRef<CapitalData | null>(null);
+  const busyRef = useRef(false);
   const load = useCallback(async () => {
-    setLoading(true); setError("");
-    try { const next = await fetchJson<CapitalData>("/api/market?action=capital"); dataRef.current = next; setData(next); updateConnection(next.meta, "capital"); }
-    catch (err) { const previous = dataRef.current; setError(err instanceof Error ? err.message : "资金数据加载失败"); updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "资金流暂不可用" }, "capital"); }
-    finally { setLoading(false); }
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setLoading(true);
+    setError("");
+    try {
+      const next = await fetchJson<CapitalData>("/api/market?action=capital", 7_500);
+      const useful = next.flow.length > 0 || next.inflow.length > 0 || next.outflow.length > 0;
+      if (useful || !dataRef.current) {
+        dataRef.current = next;
+        setData(next);
+      }
+      if (useful) {
+        try { localStorage.setItem(CAPITAL_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data: next })); }
+        catch { /* Local cache is optional. */ }
+      } else if (dataRef.current) {
+        setError("资金上游暂时没有返回新数据，已保留最近一次结果");
+      }
+      updateConnection(useful ? next.meta : { ...next.meta, mode: "stale" }, "capital");
+    } catch (err) {
+      const previous = dataRef.current;
+      setError(err instanceof Error ? err.message : "资金数据加载失败");
+      updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "资金流暂不可用" }, "capital");
+    } finally {
+      busyRef.current = false;
+      setLoading(false);
+    }
   }, [updateConnection]);
-  useEffect(() => { load(); const timer = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 30_000); return () => window.clearInterval(timer); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    const tick = async () => {
+      if (document.visibilityState === "visible") await load();
+      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 45_000 : 180_000);
+    };
+    const bootstrap = window.setTimeout(() => {
+      try {
+        const cached = JSON.parse(localStorage.getItem(CAPITAL_CACHE_KEY) || "null") as { savedAt?: number; data?: CapitalData } | null;
+        if (cached?.data && Date.now() - Number(cached.savedAt || 0) < 24 * 60 * 60_000) {
+          dataRef.current = cached.data;
+          setData(cached.data);
+          setLoading(false);
+          updateConnection({ ...cached.data.meta, mode: "stale", source: `${cached.data.meta.source} · 本地缓存` }, "capital");
+        }
+      } catch { /* Ignore invalid local cache. */ }
+      tick();
+    }, 0);
+    return () => { cancelled = true; window.clearTimeout(bootstrap); window.clearTimeout(timer); };
+  }, [load, updateConnection]);
   const mainNet = data?.flow.at(-1)?.main ?? null;
   if (loading && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><LoadingRows count={12} /></section></div>;
   if (error && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><EmptyState title="资金流连接失败" detail={error} /><button type="button" className="retry" onClick={load}>重新连接</button></section></div>;
   return <div className="capital-layout" id="main-content">
     <main className="capital-main panel">
+      {error && <div className="capital-warning" role="status"><strong>资金数据刷新暂缓</strong><span>{error}</span></div>}
       <div className="capital-hero"><div><span>资金流向 · 000300</span><h1>沪深300资金温度</h1><p>主力资金净流入逐分钟累计值</p><DataStamp meta={data?.meta} label="资金流向" compact /></div><div className="capital-price"><small>{data?.quote.name}</small><strong>{number(data?.quote.price)}</strong><em className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</em></div></div>
       <div className="capital-kpis"><div><span>主力净流入</span><strong className={tone(mainNet)}>{amount(mainNet)}</strong><em>当前累计</em></div><div><span>沪深300涨幅</span><strong className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</strong><em>指数表现</em></div><div><span>行情涨速</span><strong className={tone(data?.quote.speed)}>{signed(data?.quote.speed)}</strong><em>短时动量</em></div><div><span>最近同步</span><strong>{shortTime(data?.meta.updatedAt)}</strong><em>{data?.meta.mode === "stale" ? "缓存保护" : "实时数据"}</em></div></div>
       <div className="flow-card"><div className="section-head"><div><span>盘中主力资金</span><strong>主力资金轨迹</strong></div><button onClick={load} disabled={loading}>{loading ? "同步中…" : "重新同步"}</button></div><FlowChart rows={data?.flow || []} /></div>

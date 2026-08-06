@@ -13,6 +13,7 @@ type CacheEntry = {
 const responseCache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<{ value: any; fetchedAt: number; mode: CacheMode }>>();
 const EASTMONEY = "https://push2.eastmoney.com/api/qt";
+const EASTMONEY_DELAY = "https://push2delay.eastmoney.com/api/qt";
 const EASTMONEY_HISTORY = "https://push2his.eastmoney.com/api/qt";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1222,21 +1223,20 @@ const sectorBlacklist = ["股通", "融资", "融券", "MSCI", "罗素", "富时
 
 async function capital() {
   const quoteFields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
-  const quoteUrl = `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=${quoteFields}&secids=1.000300`;
-  const flowUrl = `${EASTMONEY}/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000300&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55`;
-  const baseFlow = `${EASTMONEY}/clist/get?pn=1&pz=40&np=1&fltt=2&invt=2&fid=f62&fs=m%3A90%2Bt%3A2&fields=f12,f14,f62`;
-  const firstPair = await Promise.allSettled([
-    resilientJson(quoteUrl, 8_000), resilientJson(flowUrl, 8_000),
+  const quoteUrl = `${EASTMONEY_DELAY}/ulist.np/get?fltt=2&invt=2&fields=${quoteFields}&secids=1.000300`;
+  const flowUrl = `${EASTMONEY_DELAY}/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000300&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55`;
+  const baseFlow = `${EASTMONEY_DELAY}/clist/get?pn=1&pz=40&np=1&fltt=2&invt=2&fid=f62&fs=m%3A90%2Bt%3A2&fields=f12,f14,f62`;
+  const settled = await Promise.allSettled([
+    resilientJson(quoteUrl, 15_000, { attempts: 1, timeoutMs: 3_500 }),
+    resilientJson(flowUrl, 15_000, { attempts: 1, timeoutMs: 3_500 }),
+    resilientJson(`${baseFlow}&po=1`, 60_000, { attempts: 1, timeoutMs: 3_500 }),
+    resilientJson(`${baseFlow}&po=0`, 60_000, { attempts: 1, timeoutMs: 3_500 }),
   ]);
-  const inflowSettled = await Promise.allSettled([resilientJson(`${baseFlow}&po=1`, 18_000)]);
-  const outflowSettled = await Promise.allSettled([resilientJson(`${baseFlow}&po=0`, 18_000)]);
-  const allSettled = [...firstPair, ...inflowSettled, ...outflowSettled];
-  const available = allSettled.filter((item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof resilientJson>>> => item.status === "fulfilled").map((item) => item.value);
-  if (!available.length) throw new Error("资金流行情暂时无法连接");
-  const quoteResult = firstPair[0].status === "fulfilled" ? firstPair[0].value : null;
-  const flowResult = firstPair[1].status === "fulfilled" ? firstPair[1].value : null;
-  const inflowResult = inflowSettled[0].status === "fulfilled" ? inflowSettled[0].value : null;
-  const outflowResult = outflowSettled[0].status === "fulfilled" ? outflowSettled[0].value : null;
+  const available = settled.filter((item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof resilientJson>>> => item.status === "fulfilled").map((item) => item.value);
+  const quoteResult = settled[0].status === "fulfilled" ? settled[0].value : null;
+  const flowResult = settled[1].status === "fulfilled" ? settled[1].value : null;
+  const inflowResult = settled[2].status === "fulfilled" ? settled[2].value : null;
+  const outflowResult = settled[3].status === "fulfilled" ? settled[3].value : null;
   const flow = (flowResult?.value?.data?.klines ?? []).map((row: string) => {
     const parts = row.split(",");
     return { time: parts[0], main: numeric(parts[1]), small: numeric(parts[2]), medium: numeric(parts[3]), large: numeric(parts[4]) };
@@ -1246,11 +1246,13 @@ async function capital() {
     .slice(0, 5)
     .map((item) => ({ code: String(item.f12 ?? ""), name: String(item.f14 ?? ""), amount: numeric(item.f62) }));
   return {
-    quote: { ...parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {}), market: 1 },
+    quote: { ...parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {}), code: "000300", market: 1, name: "沪深300" },
     flow,
     inflow: cleanSectors(inflowResult?.value?.data?.diff ?? []),
     outflow: cleanSectors(outflowResult?.value?.data?.diff ?? []),
-    meta: metaFrom(...available),
+    meta: available.length
+      ? { ...metaFrom(...available), mode: settled.some((item) => item.status === "rejected") ? "stale" as CacheMode : metaFrom(...available).mode }
+      : { mode: "stale" as CacheMode, updatedAt: 0, source: "资金行情暂不可用" },
   };
 }
 

@@ -34,6 +34,7 @@ test("server-renders the market research desk", async () => {
   assert.match(html, />自选股<\/span>/);
   assert.match(html, />ETF组<\/span>/);
   assert.match(html, />上传截图<\/button>/);
+  assert.match(html, />多选<\/button>/);
   assert.doesNotMatch(html, />板块雷达<\/button>/);
   assert.match(html, />资金流向<\/button>/);
   assert.match(html, /class="skip-link" href="#main-content"/);
@@ -69,6 +70,12 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.doesNotMatch(terminal, />(?:MARKET INTELLIGENCE|WATCHLIST|PRICE ACTION|MARKET PULSE|DATA HEALTH|INTRADAY MAIN FLOW|SECTOR FLOW|TOP 5)</);
   assert.match(terminal, /QUOTES_CACHE_KEY/);
   assert.match(terminal, /WATCHLIST_GROUPS_KEY/);
+  assert.match(terminal, /selectedWatchKeys/);
+  assert.match(terminal, /toggleSelectAll/);
+  assert.match(terminal, /"全选"/);
+  assert.match(terminal, /bulkRemoveStocks/);
+  assert.match(terminal, /CAPITAL_CACHE_KEY/);
+  assert.match(terminal, /isAShareTrading\(\) \? 45_000 : 180_000/);
   const primaryList = terminal.match(/const DEFAULT_STOCKS: Stock\[\] = \[(.*?)\];\s*const ETF_STOCKS/s)?.[1] ?? "";
   const etfList = terminal.match(/const ETF_STOCKS: Stock\[\] = \[(.*?)\];\s*const DEFAULT_WATCH_GROUPS/s)?.[1] ?? "";
   assert.equal(primaryList.match(/\{ code:/g)?.length, 39);
@@ -88,6 +95,9 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /isAShareTrading\(\) \? 60_000 : 120_000/);
   assert.match(terminal, /full=\$\{includeKline \? "1" : "0"}/);
   assert.match(marketRoute, /preferredRegion = "hkg1"/);
+  assert.match(marketRoute, /EASTMONEY_DELAY/);
+  assert.match(marketRoute, /Promise\.allSettled\(\[/);
+  assert.match(marketRoute, /attempts: 1, timeoutMs: 3_500/);
   assert.match(marketRoute, /resilientTencentText/);
   assert.match(marketRoute, /https:\/\/web\.sqt\.gtimg\.cn\/q=/);
   assert.match(marketRoute, /appstock\/app\/minute\/query/);
@@ -96,6 +106,9 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(specialRoute, /preferredRegion = "iad1"/);
   assert.deepEqual(JSON.parse(vercelConfig).regions, ["hkg1"]);
   assert.match(css, /--font-data:/);
+  assert.match(layout, /@fontsource-variable\/noto-sans-sc\/wght\.css/);
+  assert.match(css, /--font-ui:\s*"Noto Sans SC Variable"/);
+  assert.match(css, /\.watch-bulkbar/);
   assert.match(css, /resize:\s*both/);
   assert.match(css, /\.limit-badge\.up/);
   assert.match(css, /\.limit-badge\.down/);
