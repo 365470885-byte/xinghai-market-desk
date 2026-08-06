@@ -75,6 +75,9 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /"全选"/);
   assert.match(terminal, /bulkRemoveStocks/);
   assert.match(terminal, /CAPITAL_CACHE_KEY/);
+  assert.match(terminal, /fetchDirectCapital/);
+  assert.match(terminal, /push2delay\.eastmoney\.com\/api\/qt/);
+  assert.match(terminal, /东方财富直连/);
   assert.match(terminal, /isAShareTrading\(\) \? 45_000 : 180_000/);
   const primaryList = terminal.match(/const DEFAULT_STOCKS: Stock\[\] = \[(.*?)\];\s*const ETF_STOCKS/s)?.[1] ?? "";
   const etfList = terminal.match(/const ETF_STOCKS: Stock\[\] = \[(.*?)\];\s*const DEFAULT_WATCH_GROUPS/s)?.[1] ?? "";

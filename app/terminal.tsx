@@ -206,6 +206,65 @@ const finiteNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+async function fetchDirectCapital(): Promise<CapitalData> {
+  const base = "https://push2delay.eastmoney.com/api/qt";
+  const quoteFields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f22,f62";
+  const baseFlow = `${base}/clist/get?pn=1&pz=40&np=1&fltt=2&invt=2&fid=f62&fs=m%3A90%2Bt%3A2&fields=f12,f14,f62`;
+  const urls = [
+    `${base}/ulist.np/get?fltt=2&invt=2&fields=${quoteFields}&secids=1.000300`,
+    `${base}/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000300&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55`,
+    `${baseFlow}&po=1`,
+    `${baseFlow}&po=0`,
+  ];
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 4_500);
+  try {
+    const payloads = await Promise.all(urls.map(async (url) => {
+      const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+      if (!response.ok) throw new Error("资金行情直连暂不可用");
+      return response.json() as Promise<{ data?: { diff?: Array<Record<string, unknown>>; klines?: string[] } }>;
+    }));
+    const [quotePayload, flowPayload, inflowPayload, outflowPayload] = payloads;
+    const sourceQuote = quotePayload.data?.diff?.[0] || {};
+    const quote: Quote = {
+      code: "000300",
+      market: 1,
+      name: "沪深300",
+      price: finiteNumber(sourceQuote.f2),
+      changePercent: finiteNumber(sourceQuote.f3),
+      speed: finiteNumber(sourceQuote.f22),
+      high: finiteNumber(sourceQuote.f15),
+      low: finiteNumber(sourceQuote.f16),
+      open: finiteNumber(sourceQuote.f17),
+      prevClose: finiteNumber(sourceQuote.f18),
+      volume: finiteNumber(sourceQuote.f5),
+      amount: finiteNumber(sourceQuote.f6),
+      turnover: finiteNumber(sourceQuote.f8),
+      amplitude: finiteNumber(sourceQuote.f7),
+      netInflow: finiteNumber(sourceQuote.f62),
+    };
+    const flow = (flowPayload.data?.klines || []).map((row) => {
+      const parts = row.split(",");
+      return { time: parts[0], main: finiteNumber(parts[1]), small: finiteNumber(parts[2]), medium: finiteNumber(parts[3]), large: finiteNumber(parts[4]) };
+    });
+    const sectorBlacklist = ["股通", "融资", "融券", "MSCI", "罗素", "富时", "指数", "基金", "ETF", "LOF", "期货", "期权", "沪通", "深通", "昨日", "北交", "科创", "创业", "主板", "ST"];
+    const cleanSectors = (rows: Array<Record<string, unknown>> = []) => rows
+      .filter((item) => !sectorBlacklist.some((word) => String(item.f14 || "").includes(word)))
+      .slice(0, 5)
+      .map((item) => ({ code: String(item.f12 || ""), name: String(item.f14 || ""), amount: finiteNumber(item.f62) }));
+    if (!flow.length && !inflowPayload.data?.diff?.length && !outflowPayload.data?.diff?.length) throw new Error("资金行情直连暂无数据");
+    return {
+      quote,
+      flow,
+      inflow: cleanSectors(inflowPayload.data?.diff),
+      outflow: cleanSectors(outflowPayload.data?.diff),
+      meta: { mode: "live", updatedAt: Date.now(), source: "东方财富直连" },
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function fetchDirectRankings(): Promise<RankingData> {
   const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
   const fields = "f2,f3,f5,f6,f8,f12,f13,f14,f15,f16,f17,f18,f20,f100";
@@ -1555,7 +1614,12 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
     setLoading(true);
     setError("");
     try {
-      const next = await fetchJson<CapitalData>("/api/market?action=capital", 7_500);
+      let next: CapitalData;
+      try {
+        next = await fetchDirectCapital();
+      } catch {
+        next = await fetchJson<CapitalData>("/api/market?action=capital", 7_500);
+      }
       const useful = next.flow.length > 0 || next.inflow.length > 0 || next.outflow.length > 0;
       if (useful || !dataRef.current) {
         dataRef.current = next;
