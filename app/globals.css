@@ -214,6 +214,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .metric:last-child { border-right: 0; }
 .metric span { display: block; color: var(--muted); font-size: 11px; font-weight: 550; }
 .metric strong { display: block; margin-top: 8px; font: 600 13px/1.2 var(--font-ui); }
+.turnover-metric strong { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px; }
+.turnover-metric small { color: #607385; font: 560 10px/1.25 var(--font-ui); white-space: nowrap; }
 .hero-loading { display: grid; gap: 17px; }
 .hero-loading div { height: 18px; width: 30%; border-radius: 3px; background: linear-gradient(90deg, #edf2f6, #f8fafc, #edf2f6); background-size: 200%; animation: shimmer 1.5s infinite; }
 .hero-loading div:nth-child(2) { height: 42px; width: 24%; }
@@ -229,6 +231,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .chart-legend span { display: flex; align-items: center; gap: 5px; }
 .chart-legend i { width: 12px; height: 2px; }
 .price-line { background: var(--blue); }
+.auction-line { height: 0 !important; border-top: 2px dashed #b7893d; background: transparent; }
 .avg-line { background: var(--gold); }
 .chart-legend em { margin-left: auto; color: var(--faint); font-style: normal; }
 .market-canvas { display: block; width: 100%; flex: 1; min-height: 345px; }

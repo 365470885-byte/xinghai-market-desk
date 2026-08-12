@@ -66,6 +66,9 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /data-stock-key={key}/);
   assert.match(terminal, /keyOf\(detail\.quote\) === activeKey/);
   assert.match(terminal, /新增分时节点时更新 · 重点行情约1秒/);
+  assert.match(terminal, /集合竞价/);
+  assert.match(terminal, /实际换手率/);
+  assert.match(terminal, /fetchDirectOpeningAuction/);
   assert.match(terminal, /setChartDetail\(activeDetail\)/);
   assert.doesNotMatch(terminal, />(?:MARKET INTELLIGENCE|WATCHLIST|PRICE ACTION|MARKET PULSE|DATA HEALTH|INTRADAY MAIN FLOW|SECTOR FLOW|TOP 5)</);
   assert.match(terminal, /QUOTES_CACHE_KEY/);
@@ -106,12 +109,17 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(marketRoute, /appstock\/app\/minute\/query/);
   assert.match(marketRoute, /smartbox\.gtimg\.cn\/s3/);
   assert.match(marketRoute, /loadEastmoneyQuotes\(missingAShares\)/);
+  assert.match(marketRoute, /loadActualTurnover/);
+  assert.match(marketRoute, /RPT_F10_EH_FREEHOLDERS/);
+  assert.match(marketRoute, /clock < "09:15:00" \|\| clock > "09:25:00"/);
   assert.match(specialRoute, /preferredRegion = "iad1"/);
   assert.deepEqual(JSON.parse(vercelConfig).regions, ["hkg1"]);
   assert.match(css, /--font-data:/);
   assert.match(layout, /@fontsource-variable\/noto-sans-sc\/wght\.css/);
   assert.match(css, /--font-ui:\s*"Noto Sans SC Variable"/);
   assert.match(css, /\.watch-bulkbar/);
+  assert.match(css, /\.auction-line/);
+  assert.match(css, /\.turnover-metric/);
   assert.match(css, /resize:\s*both/);
   assert.match(css, /\.limit-badge\.up/);
   assert.match(css, /\.limit-badge\.down/);

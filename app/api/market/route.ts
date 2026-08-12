@@ -15,6 +15,7 @@ const inflight = new Map<string, Promise<{ value: any; fetchedAt: number; mode: 
 const EASTMONEY = "https://push2.eastmoney.com/api/qt";
 const EASTMONEY_DELAY = "https://push2delay.eastmoney.com/api/qt";
 const EASTMONEY_HISTORY = "https://push2his.eastmoney.com/api/qt";
+const EASTMONEY_DATACENTER = "https://datacenter-web.eastmoney.com/api/data/v1/get";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -509,6 +510,57 @@ function parseTencentQuotes(text: string, requested: string[]) {
   return items;
 }
 
+async function loadActualTurnover(secid: string) {
+  const code = secid.split(".")[1] || "";
+  const snapshotUrl = `${EASTMONEY}/stock/get?secid=${encodeURIComponent(secid)}&fields=f47,f85,f168`;
+  const holderFilter = encodeURIComponent(`(SECURITY_CODE="${code}")`);
+  const holderUrl = `${EASTMONEY_DATACENTER}?reportName=RPT_F10_EH_FREEHOLDERS&columns=SECURITY_CODE,END_DATE,HOLDER_RANK,HOLD_NUM,FREE_HOLDNUM_RATIO&filter=${holderFilter}&pageNumber=1&pageSize=20&sortColumns=END_DATE,HOLDER_RANK&sortTypes=-1,1&source=WEB&client=WEB`;
+  const [snapshotSettled, holderSettled] = await Promise.allSettled([
+    resilientJson(snapshotUrl, 2_000, { attempts: 1, timeoutMs: 1_800 }),
+    resilientJson(holderUrl, 6 * 60 * 60 * 1_000, { attempts: 1, timeoutMs: 1_600 }),
+  ]);
+  if (snapshotSettled.status !== "fulfilled" || holderSettled.status !== "fulfilled") {
+    return { actualTurnover: null, actualTurnoverAsOf: null, results: [] as Array<Awaited<ReturnType<typeof resilientJson>>> };
+  }
+
+  const snapshot = snapshotSettled.value.value?.data ?? {};
+  const holderRows = (holderSettled.value.value?.result?.data ?? []) as Array<Record<string, unknown>>;
+  const latestDate = holderRows.map((row) => String(row.END_DATE ?? "")).filter(Boolean).sort().at(-1) || "";
+  const stableShares = holderRows
+    .filter((row) => String(row.END_DATE ?? "") === latestDate && (numeric(row.FREE_HOLDNUM_RATIO) ?? 0) >= 5)
+    .reduce((total, row) => total + (numeric(row.HOLD_NUM) ?? 0), 0);
+  const volumeLots = numeric(snapshot.f47);
+  const circulatingShares = numeric(snapshot.f85);
+  const freeFloatShares = circulatingShares === null ? null : circulatingShares - stableShares;
+  const actualTurnover = latestDate && volumeLots !== null && freeFloatShares !== null && freeFloatShares > 0
+    ? (volumeLots * 100 * 100) / freeFloatShares
+    : null;
+  return {
+    actualTurnover,
+    actualTurnoverAsOf: latestDate || null,
+    results: [snapshotSettled.value, holderSettled.value],
+  };
+}
+
+async function loadOpeningAuction(secid: string, date: string) {
+  if (!date) return { rows: [] as Array<{ time: string; price: number | null; average: number | null; volume: number | null; amount: number | null; auction: true }>, result: null };
+  const url = `${EASTMONEY}/stock/details/get?secid=${encodeURIComponent(secid)}&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55&pos=0&iscca=1`;
+  try {
+    const result = await resilientJson(url, 30_000, { attempts: 1, timeoutMs: 1_200 });
+    const rows = ((result.value?.data?.details ?? []) as string[]).map((row) => {
+      const parts = row.split(",");
+      const clock = parts[0] || "";
+      if (clock < "09:15:00" || clock > "09:25:00") return null;
+      const price = numeric(parts[1]);
+      if (price === null) return null;
+      return { time: `${date} ${clock}`, price, average: null, volume: numeric(parts[2]), amount: null, auction: true as const };
+    }).filter((row): row is NonNullable<typeof row> => Boolean(row));
+    return { rows, result };
+  } catch {
+    return { rows: [] as Array<{ time: string; price: number | null; average: number | null; volume: number | null; amount: number | null; auction: true }>, result: null };
+  }
+}
+
 function parseThsJsonp(text: string) {
   const start = text.indexOf("(");
   const end = text.lastIndexOf(")");
@@ -710,19 +762,38 @@ async function detail(secid: string, since = "", includeKline = true) {
 
   if (specialMarket === 0 || specialMarket === 1) {
     const symbol = `${specialMarket === 1 ? "sh" : "sz"}${specialCode}`;
+    const shanghaiDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date());
     const quotePromise = resilientTencentText(`https://web.sqt.gtimg.cn/q=${symbol}`, 2_000, { attempts: 1, timeoutMs: 1_800 });
     const trendPromise = resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${symbol}`, 2_000, { attempts: 1, timeoutMs: 1_800 });
     const klinePromise = includeKline
       ? resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,45,qfq`, 90_000, { attempts: 1, timeoutMs: 2_000 })
       : Promise.resolve(null);
-    const [quoteSettled, trendSettled, klineSettled] = await Promise.allSettled([quotePromise, trendPromise, klinePromise]);
+    const auctionPromise = since ? Promise.resolve({ rows: [], result: null }) : loadOpeningAuction(secid, shanghaiDate);
+    const actualTurnoverPromise = loadActualTurnover(secid);
+    const [quoteSettled, trendSettled, klineSettled, auctionSettled, actualTurnoverSettled] = await Promise.allSettled([
+      quotePromise, trendPromise, klinePromise, auctionPromise, actualTurnoverPromise,
+    ]);
     const quoteResult = quoteSettled.status === "fulfilled" ? quoteSettled.value : null;
     const trendResult = trendSettled.status === "fulfilled" ? trendSettled.value : null;
     const klineResult = klineSettled.status === "fulfilled" ? klineSettled.value : null;
-    const quote = quoteResult ? parseTencentQuotes(quoteResult.value, [secid])[0] : null;
+    const auctionResult = auctionSettled.status === "fulfilled" ? auctionSettled.value : { rows: [], result: null };
+    const actualTurnoverResult = actualTurnoverSettled.status === "fulfilled"
+      ? actualTurnoverSettled.value
+      : { actualTurnover: null, actualTurnoverAsOf: null, results: [] };
+    const rawQuote = quoteResult ? parseTencentQuotes(quoteResult.value, [secid])[0] : null;
+    const quote = rawQuote ? {
+      ...rawQuote,
+      actualTurnover: actualTurnoverResult.actualTurnover,
+      actualTurnoverAsOf: actualTurnoverResult.actualTurnoverAsOf,
+    } : null;
     const minutePayload = trendResult?.value?.data?.[symbol]?.data;
     const minuteDate = String(minutePayload?.date ?? "");
-    const trends = ((minutePayload?.data ?? []) as string[]).map((row) => {
+    const minuteTradingDate = /^\d{8}$/.test(minuteDate)
+      ? `${minuteDate.slice(0, 4)}-${minuteDate.slice(4, 6)}-${minuteDate.slice(6, 8)}`
+      : shanghaiDate;
+    const minuteTrends = ((minutePayload?.data ?? []) as string[]).map((row) => {
       const parts = row.split(" ");
       const hhmm = String(parts[0] ?? "");
       const clock = Number(hhmm);
@@ -739,6 +810,8 @@ async function detail(secid: string, since = "", includeKline = true) {
       };
     }).filter((row) => row.price !== null && ((row.clock >= 930 && row.clock <= 1130) || (row.clock >= 1300 && row.clock <= 1500)))
       .map(({ hhmm: _hhmm, clock: _clock, ...row }) => row);
+    const datedAuctionRows = auctionResult.rows.map((row) => ({ ...row, time: `${minuteTradingDate} ${row.time.split(" ").at(-1)}` }));
+    const trends = [...datedAuctionRows, ...minuteTrends].sort((left, right) => left.time.localeCompare(right.time));
 
     const rawKlines = (klineResult?.value?.data?.[symbol]?.qfqday ?? klineResult?.value?.data?.[symbol]?.day ?? []) as string[][];
     const klines = rawKlines.slice(-45).map((row, index) => {
@@ -755,14 +828,14 @@ async function detail(secid: string, since = "", includeKline = true) {
         changePercent: close !== null && previousClose !== null && previousClose !== 0 ? ((close - previousClose) / previousClose) * 100 : null,
       };
     });
-    const available = [quoteResult, trendResult, klineResult].filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const available = [quoteResult, trendResult, klineResult, auctionResult.result, ...actualTurnoverResult.results].filter((item): item is NonNullable<typeof item> => Boolean(item));
     if (quote && trends.length && available.length) {
       return {
         quote,
         trends: since ? trends.filter((row) => row.time > since) : trends,
         klines,
         preClose: numeric(minutePayload?.prec) ?? quote.prevClose,
-        meta: { ...metaFrom(...available), source: "腾讯行情" },
+        meta: { ...metaFrom(...available), source: actualTurnoverResult.actualTurnover === null ? "腾讯行情" : "腾讯行情 + 东方财富股本" },
       };
     }
   }
@@ -785,7 +858,7 @@ async function detail(secid: string, since = "", includeKline = true) {
   const klineResult = includeKline && settled[2]?.status === "fulfilled" ? settled[2].value : null;
   const realtimeAvailable = [quoteResult, trendsResult].filter((item): item is Awaited<ReturnType<typeof resilientJson>> => Boolean(item));
 
-  let trends: Array<{ time: string; price: number | null; average: number | null; volume: number | null; amount: number | null }> = (trendsResult?.value?.data?.trends ?? []).map((row: string) => {
+  let trends: Array<{ time: string; price: number | null; average: number | null; volume: number | null; amount: number | null; auction?: boolean }> = (trendsResult?.value?.data?.trends ?? []).map((row: string) => {
     const parts = row.split(",");
     return { time: parts[0], price: numeric(parts[2]), average: numeric(parts[7]), volume: numeric(parts[5]), amount: numeric(parts[6]) };
   }).filter((item: { price: number | null }) => item.price !== null);
@@ -798,7 +871,7 @@ async function detail(secid: string, since = "", includeKline = true) {
     };
   });
 
-  let quote = parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {});
+  let quote: ReturnType<typeof parseQuote> & { actualTurnover?: number | null; actualTurnoverAsOf?: string | null } = parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {});
   let usedSina = false;
   const [marketText, code] = secid.split(".");
   const market = Number(marketText);
@@ -840,6 +913,30 @@ async function detail(secid: string, since = "", includeKline = true) {
     }
   }
 
+  if (market === 0 || market === 1) {
+    const fallbackTradingDate = trends.find((row) => /^\d{4}-\d{2}-\d{2}/.test(row.time))?.time.slice(0, 10)
+      || klines.at(-1)?.date
+      || new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(new Date());
+    const [actualTurnoverResult, auctionResult] = await Promise.all([
+      loadActualTurnover(secid),
+      since ? Promise.resolve({ rows: [], result: null }) : loadOpeningAuction(secid, fallbackTradingDate),
+    ]);
+    quote = {
+      ...quote,
+      actualTurnover: actualTurnoverResult.actualTurnover,
+      actualTurnoverAsOf: actualTurnoverResult.actualTurnoverAsOf,
+    };
+    actualTurnoverResult.results.forEach((result) => available.push(result));
+    if (auctionResult.result) available.push(auctionResult.result);
+    if (auctionResult.rows.length) {
+      const merged = new Map(trends.map((row) => [row.time, row]));
+      auctionResult.rows.forEach((row) => merged.set(row.time, row));
+      trends = Array.from(merged.values()).sort((left, right) => left.time.localeCompare(right.time));
+    }
+  }
+
   if (!available.length) throw new Error("个股行情暂时无法连接");
 
   return {
@@ -847,7 +944,10 @@ async function detail(secid: string, since = "", includeKline = true) {
     trends: since ? trends.filter((row) => row.time > since) : trends,
     klines,
     preClose: numeric(trendsResult?.value?.data?.preClose ?? trendsResult?.value?.data?.prePrice),
-    meta: { ...metaFrom(...(realtimeAvailable.length ? realtimeAvailable : available)), source: usedSina ? "东方财富 + 新浪行情" : "东方财富" },
+    meta: {
+      ...metaFrom(...(realtimeAvailable.length ? realtimeAvailable : available)),
+      source: usedSina ? "东方财富 + 新浪行情" : quote.actualTurnover === null || quote.actualTurnover === undefined ? "东方财富" : "东方财富行情 + 股本",
+    },
   };
 }
 

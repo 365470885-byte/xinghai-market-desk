@@ -15,9 +15,10 @@ type Quote = Stock & {
   price: number | null; changePercent: number | null; speed: number | null; high?: number | null;
   low?: number | null; open?: number | null; prevClose?: number | null; volume?: number | null;
   amount?: number | null; marketCap?: number | null; turnover?: number | null; amplitude?: number | null; netInflow?: number | null;
+  actualTurnover?: number | null; actualTurnoverAsOf?: string | null;
   limitState?: "up" | "down" | null; sealedAmount?: number | null; sector?: string | null;
 };
-type Trend = { time: string; price: number | null; average: number | null; volume: number | null; amount: number | null };
+type Trend = { time: string; price: number | null; average: number | null; volume: number | null; amount: number | null; auction?: boolean };
 type Kline = { date: string; open: number | null; close: number | null; high: number | null; low: number | null; volume: number | null; amount: number | null; changePercent: number | null };
 type Detail = { quote: Quote; trends: Trend[]; klines: Kline[]; preClose: number | null; meta: MarketMeta };
 type Speed4 = { code: string; market: number; speed4m: number; pointTime: string };
@@ -205,6 +206,61 @@ const finiteNumber = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
+
+const openingAuctionCache = new Map<string, { fetchedAt: number; rows: Trend[] }>();
+const openingAuctionInflight = new Map<string, Promise<Trend[]>>();
+
+function shanghaiDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(date);
+}
+
+async function fetchDirectOpeningAuction(stock: Stock, tradingDate?: string): Promise<Trend[]> {
+  if (stock.market !== 0 && stock.market !== 1) return [];
+  const date = tradingDate || shanghaiDateKey();
+  const cacheKey = `${keyOf(stock)}:${date}`;
+  const now = new Date();
+  const shanghaiParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(now);
+  const hour = Number(shanghaiParts.find((part) => part.type === "hour")?.value || 0);
+  const minute = Number(shanghaiParts.find((part) => part.type === "minute")?.value || 0);
+  const beforeAuctionEnds = hour * 60 + minute < 9 * 60 + 26;
+  const cached = openingAuctionCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < (beforeAuctionEnds ? 10_000 : 24 * 60 * 60 * 1_000)) return cached.rows;
+  const pending = openingAuctionInflight.get(cacheKey);
+  if (pending) return pending;
+
+  const request = (async () => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 3_200);
+    try {
+      const url = `https://push2.eastmoney.com/api/qt/stock/details/get?secid=${encodeURIComponent(keyOf(stock))}&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55&pos=0&iscca=1`;
+      const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+      if (!response.ok) throw new Error("集合竞价直连暂不可用");
+      const payload = await response.json() as { data?: { details?: string[] } };
+      const rows = (payload.data?.details || []).map((row): Trend | null => {
+        const parts = row.split(",");
+        const clock = parts[0] || "";
+        if (clock < "09:15:00" || clock > "09:25:00") return null;
+        const price = finiteNumber(parts[1]);
+        if (price === null) return null;
+        return { time: `${date} ${clock}`, price, average: null, volume: finiteNumber(parts[2]), amount: null, auction: true };
+      }).filter((row): row is Trend => Boolean(row));
+      openingAuctionCache.set(cacheKey, { fetchedAt: Date.now(), rows });
+      return rows;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  })();
+  openingAuctionInflight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    openingAuctionInflight.delete(cacheKey);
+  }
+}
 
 async function fetchDirectCapital(): Promise<CapitalData> {
   const base = "https://push2delay.eastmoney.com/api/qt";
@@ -496,18 +552,18 @@ function grid(ctx: CanvasRenderingContext2D, width: number, height: number, pad:
 }
 
 function aShareSessionProgress(time: string, fallbackIndex: number) {
-  const match = time.match(/(\d{2}):(\d{2})(?::\d{2})?$/);
-  if (!match) return Math.min(Math.max(fallbackIndex, 0), 240) / 240;
-  const minute = Number(match[1]) * 60 + Number(match[2]);
+  const match = time.match(/(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return Math.min(Math.max(fallbackIndex, 0), 255) / 255;
+  const minute = Number(match[1]) * 60 + Number(match[2]) + Number(match[3] || 0) / 60;
   const tradingMinute = minute <= 11 * 60 + 30
-    ? minute - (9 * 60 + 30)
+    ? minute - (9 * 60 + 15)
     : minute >= 13 * 60
-      ? 120 + minute - 13 * 60
-      : 120;
-  return Math.min(Math.max(tradingMinute, 0), 240) / 240;
+      ? 135 + minute - 13 * 60
+      : 135;
+  return Math.min(Math.max(tradingMinute, 0), 255) / 255;
 }
 
-type ChartHover = { x: number; y: number; label: string; price: number | null; average?: number | null; volume?: number | null; amount?: number | null };
+type ChartHover = { x: number; y: number; label: string; price: number | null; average?: number | null; volume?: number | null; amount?: number | null; auction?: boolean };
 const MARKET_CHART_LEFT = 88;
 const MARKET_CHART_RIGHT = 18;
 
@@ -528,6 +584,8 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
 
     if (mode === "time") {
       const rows = detail.trends.filter((row) => row.price !== null);
+      const auctionRows = rows.filter((row) => row.auction);
+      const continuousRows = rows.filter((row) => !row.auction);
       const prices = rows.map((row) => row.price as number);
       const base = detail.preClose || detail.quote.prevClose || prices[0];
       const span = Math.max(...prices.map((p) => Math.abs(p - base)), base * 0.006, 0.01);
@@ -538,10 +596,22 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       const lastRow = rows.at(-1) as Trend;
       const lastX = x(lastRow, rows.length - 1);
 
+      const regularOpenX = pad.l + aShareSessionProgress("09:30", 15) * plotW;
+      ctx.fillStyle = "rgba(183, 137, 61, .065)";
+      ctx.fillRect(pad.l, pad.t, regularOpenX - pad.l, plotH);
+      ctx.save();
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = "rgba(154, 107, 37, .42)";
+      ctx.beginPath(); ctx.moveTo(regularOpenX, pad.t); ctx.lineTo(regularOpenX, height - pad.b); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = "#8c672d";
+      ctx.textAlign = "left";
+      ctx.fillText("9:30", regularOpenX + 4, pad.t + 12);
+
       const maxVolume = Math.max(...rows.map((row) => row.volume || 0), 1);
-      ctx.fillStyle = "rgba(33, 118, 169, .13)";
       rows.forEach((row, index) => {
         const volumeH = ((row.volume || 0) / maxVolume) * plotH * .17;
+        ctx.fillStyle = row.auction ? "rgba(183, 137, 61, .25)" : "rgba(33, 118, 169, .13)";
         ctx.fillRect(x(row, index) - 1.2, height - pad.b - volumeH, 2.4, volumeH);
       });
 
@@ -554,23 +624,36 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       const gradient = ctx.createLinearGradient(0, pad.t, 0, height - pad.b);
       gradient.addColorStop(0, "rgba(77,181,255,.24)");
       gradient.addColorStop(1, "rgba(77,181,255,0)");
-      ctx.beginPath();
-      rows.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.price as number)) : ctx.moveTo(x(row, index), y(row.price as number)));
-      ctx.lineTo(lastX, height - pad.b); ctx.lineTo(pad.l, height - pad.b); ctx.closePath();
-      ctx.fillStyle = gradient; ctx.fill();
+      if (continuousRows.length) {
+        const firstContinuousX = x(continuousRows[0], 0);
+        const lastContinuousX = x(continuousRows.at(-1) as Trend, continuousRows.length - 1);
+        ctx.beginPath();
+        continuousRows.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.price as number)) : ctx.moveTo(x(row, index), y(row.price as number)));
+        ctx.lineTo(lastContinuousX, height - pad.b); ctx.lineTo(firstContinuousX, height - pad.b); ctx.closePath();
+        ctx.fillStyle = gradient; ctx.fill();
 
-      ctx.beginPath();
-      rows.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.price as number)) : ctx.moveTo(x(row, index), y(row.price as number)));
-      ctx.strokeStyle = "#55b9ff"; ctx.lineWidth = 1.8; ctx.stroke();
+        ctx.beginPath();
+        continuousRows.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.price as number)) : ctx.moveTo(x(row, index), y(row.price as number)));
+        ctx.strokeStyle = "#55b9ff"; ctx.lineWidth = 1.8; ctx.stroke();
+      }
 
-      const averages = rows.filter((row) => row.average !== null);
+      if (auctionRows.length) {
+        ctx.save();
+        ctx.beginPath();
+        auctionRows.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.price as number)) : ctx.moveTo(x(row, index), y(row.price as number)));
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = "#b7893d"; ctx.lineWidth = 1.55; ctx.stroke();
+        ctx.restore();
+      }
+
+      const averages = continuousRows.filter((row) => row.average !== null);
       ctx.beginPath();
       averages.forEach((row, index) => index ? ctx.lineTo(x(row, index), y(row.average as number)) : ctx.moveTo(x(row, index), y(row.average as number)));
       ctx.strokeStyle = "#d7ae66"; ctx.lineWidth = 1.15; ctx.stroke();
 
       ctx.beginPath();
       ctx.arc(lastX, y(lastRow.price as number), 2.8, 0, Math.PI * 2);
-      ctx.fillStyle = "#55b9ff";
+      ctx.fillStyle = lastRow.auction ? "#b7893d" : "#55b9ff";
       ctx.fill();
 
       const axisLabel = (value: number) => `${value.toFixed(2)}  ${signed(((value - base) / base) * 100)}`;
@@ -585,7 +668,9 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       drawAxisLabel(min, height - pad.b);
       ctx.textAlign = "left"; ctx.fillStyle = "#9a6b25"; ctx.fillText("昨收", pad.l + 5, y(base) - 6);
       ctx.textAlign = "center";
-      ["09:30", "10:30", "11:30 / 13:00", "14:00", "15:00"].forEach((label, i) => ctx.fillText(label, pad.l + (plotW * i) / 4, height - 12));
+      [
+        ["09:15竞价", 0], ["10:30", 75 / 255], ["11:30 / 13:00", 135 / 255], ["14:00", 195 / 255], ["15:00", 1],
+      ].forEach(([label, progress]) => ctx.fillText(String(label), pad.l + plotW * Number(progress), height - 12));
     } else {
       const rows = detail.klines.filter((row) => row.close !== null && row.high !== null && row.low !== null);
       const max = Math.max(...rows.map((row) => row.high as number));
@@ -632,7 +717,7 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       });
       const row = rows[nearestIndex];
       const x = MARKET_CHART_LEFT + aShareSessionProgress(row.time, nearestIndex) * plotWidth;
-      setHover({ x, y, label: row.time.split(" ").at(-1) || row.time, price: row.price, average: row.average, volume: row.volume, amount: row.amount });
+      setHover({ x, y, label: row.time.split(" ").at(-1) || row.time, price: row.price, average: row.auction ? undefined : row.average, volume: row.volume, amount: row.amount, auction: row.auction });
       return;
     }
     const rows = (detail?.klines || []).filter((row) => row.close !== null);
@@ -648,9 +733,9 @@ function MarketChart({ detail, mode }: { detail: Detail | null; mode: ChartMode 
       <span className="crosshair vertical" style={{ left: hover.x }} aria-hidden="true" />
       <span className="crosshair horizontal" style={{ top: hover.y }} aria-hidden="true" />
       <div className="chart-tooltip" style={{ left: hover.x, top: hover.y }}>
-        <strong>{hover.label}</strong><span>价格 {number(hover.price)}</span>
+        <strong>{hover.label}</strong>{hover.auction && <span>阶段 集合竞价</span>}<span>价格 {number(hover.price)}</span>
         {hover.average !== undefined && <span>均价 {number(hover.average)}</span>}
-        <span>成交量 {amount(hover.volume)}</span>
+        <span>{hover.auction ? "竞价委托量" : "成交量"} {amount(hover.volume)}</span>
         {hover.amount !== undefined && <span>成交额 {amount(hover.amount)}</span>}
       </div>
     </>}
@@ -1069,6 +1154,18 @@ export function StockTerminal() {
         data.trends.forEach((row) => trends.set(row.time, row));
         return { ...data, trends: Array.from(trends.values()).sort((a, b) => a.time.localeCompare(b.time)), klines: data.klines.length ? data.klines : current.klines, preClose: data.preClose ?? current.preClose };
       });
+      if ((stock.market === 0 || stock.market === 1) && !data.trends.some((row) => row.auction)) {
+        const tradingDate = data.trends.find((row) => !row.auction)?.time.slice(0, 10) || shanghaiDateKey();
+        void fetchDirectOpeningAuction(stock, tradingDate).then((auctionRows) => {
+          if (!auctionRows.length) return;
+          setDetail((current) => {
+            if (!current || keyOf(current.quote) !== stockKey) return current;
+            const trends = new Map(current.trends.map((row) => [row.time, row]));
+            auctionRows.forEach((row) => trends.set(row.time, row));
+            return { ...current, trends: Array.from(trends.values()).sort((a, b) => a.time.localeCompare(b.time)) };
+          });
+        }).catch(() => undefined);
+      }
       updateConnection(data.meta, "detail");
     } catch (error) {
       if (requestId === detailRequest.current && !silent) {
@@ -1402,14 +1499,18 @@ export function StockTerminal() {
               <div className="quote-heading"><div className="quote-symbol"><div><h1>{activeQuote.name || activeStock?.name}</h1><p>{activeQuote.code} · {marketDescription(activeQuote.market)}</p></div></div><DataStamp meta={activeDetail?.meta || feedStates.detail} label="个股详情" compact /></div>
               <div className="price-cluster"><strong className={tone(activeQuote.changePercent)}>{number(activeQuote.price)}</strong><div className={tone(activeQuote.changePercent)}><span>{signed(activeQuote.changePercent)}</span><small>较前收 {number(activeQuote.prevClose)}</small></div></div>
               <div className="metric-grid">
-                {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)], ["换手率", signed(activeQuote.turnover)], ["总市值", marketAmount(activeQuote.marketCap)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
+                {[ ["今开", number(activeQuote.open)], ["最高涨幅", relativePercent(activeQuote.high, activeQuote.prevClose)], ["最低跌幅", relativePercent(activeQuote.low, activeQuote.prevClose)], ["涨速", signed(activeQuote.speed)], ["成交额", amount(activeQuote.amount)] ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}
+                <div className="metric turnover-metric" title={`实际换手率按当日成交量与最新披露的自由流通股估算${activeQuote.actualTurnoverAsOf ? `，股东数据截至 ${activeQuote.actualTurnoverAsOf.slice(0, 10)}` : ""}`}>
+                  <span>换手率</span><strong>{signed(activeQuote.turnover)} <small>（实际换手率 {signed(activeQuote.actualTurnover)}）</small></strong>
+                </div>
+                <div className="metric"><span>总市值</span><strong>{marketAmount(activeQuote.marketCap)}</strong></div>
               </div>
             </> : <div className="hero-loading" role="status" aria-label="正在加载个股行情"><div /><div /><div /></div>}
           </section>
 
           <section className="chart-panel panel" title="拖动右下角可调整宽高">
             <div className="section-head"><div><span>行情走势</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "新增分时节点时更新 · 重点行情约1秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="auction-line" />集合竞价</span><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "新增分时节点时更新 · 重点行情约1秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
             <MarketChart key={`${activeKey}-${chartMode}`} detail={visibleChartDetail} mode={chartMode} />
           </section>
         </main>
