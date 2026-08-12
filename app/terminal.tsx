@@ -21,6 +21,11 @@ type Quote = Stock & {
 type Trend = { time: string; price: number | null; average: number | null; volume: number | null; amount: number | null; auction?: boolean };
 type Kline = { date: string; open: number | null; close: number | null; high: number | null; low: number | null; volume: number | null; amount: number | null; changePercent: number | null };
 type Detail = { quote: Quote; trends: Trend[]; klines: Kline[]; preClose: number | null; meta: MarketMeta };
+type ActualTurnoverInfo = {
+  actualTurnover: number | null;
+  actualTurnoverFactor: number | null;
+  actualTurnoverAsOf: string | null;
+};
 type Speed4 = { code: string; market: number; speed4m: number; pointTime: string };
 type MarketTurnover = {
   currentAmount: number; previousAmount: number; delta: number; deltaPercent: number;
@@ -209,6 +214,8 @@ const finiteNumber = (value: unknown) => {
 
 const openingAuctionCache = new Map<string, { fetchedAt: number; rows: Trend[] }>();
 const openingAuctionInflight = new Map<string, Promise<Trend[]>>();
+const actualTurnoverCache = new Map<string, { fetchedAt: number; value: ActualTurnoverInfo }>();
+const actualTurnoverInflight = new Map<string, Promise<ActualTurnoverInfo>>();
 
 function shanghaiDateKey(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -259,6 +266,75 @@ async function fetchDirectOpeningAuction(stock: Stock, tradingDate?: string): Pr
     return await request;
   } finally {
     openingAuctionInflight.delete(cacheKey);
+  }
+}
+
+async function fetchDirectActualTurnover(stock: Stock): Promise<ActualTurnoverInfo> {
+  if (stock.market !== 0 && stock.market !== 1) {
+    return { actualTurnover: null, actualTurnoverFactor: null, actualTurnoverAsOf: null };
+  }
+  const stockKey = keyOf(stock);
+  const cached = actualTurnoverCache.get(stockKey);
+  if (cached && Date.now() - cached.fetchedAt < 6 * 60 * 60 * 1_000) return cached.value;
+  const pending = actualTurnoverInflight.get(stockKey);
+  if (pending) return pending;
+
+  const request = (async () => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 3_200);
+    try {
+      const holderFilter = encodeURIComponent(`(SECURITY_CODE="${stock.code}")`);
+      const urls = [
+        `https://push2.eastmoney.com/api/qt/stock/get?secid=${encodeURIComponent(stockKey)}&fields=f47,f85,f168`,
+        `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_F10_EH_FREEHOLDERS&columns=SECURITY_CODE,END_DATE,HOLDER_RANK,HOLD_NUM,FREE_HOLDNUM_RATIO&filter=${holderFilter}&pageNumber=1&pageSize=20&sortColumns=END_DATE,HOLDER_RANK&sortTypes=-1,1&source=WEB&client=WEB`,
+      ];
+      const [snapshotResponse, holderResponse] = await Promise.all(urls.map((url) => fetch(url, {
+        signal: controller.signal,
+        cache: "no-store",
+        mode: "cors",
+      })));
+      if (!snapshotResponse.ok || !holderResponse.ok) throw new Error("股本数据直连暂不可用");
+      const snapshotPayload = await snapshotResponse.json() as { data?: Record<string, unknown> };
+      const holderPayload = await holderResponse.json() as { result?: { data?: Array<Record<string, unknown>> } };
+      const snapshot = snapshotPayload.data || {};
+      const holderRows = holderPayload.result?.data || [];
+      const latestDate = holderRows.map((row) => String(row.END_DATE || "")).filter(Boolean).sort().at(-1) || "";
+      const stableShares = holderRows
+        .filter((row) => String(row.END_DATE || "") === latestDate && (finiteNumber(row.FREE_HOLDNUM_RATIO) || 0) >= 5)
+        .reduce((total, row) => total + (finiteNumber(row.HOLD_NUM) || 0), 0);
+      const volumeLots = finiteNumber(snapshot.f47);
+      const circulatingShares = finiteNumber(snapshot.f85);
+      const freeFloatShares = circulatingShares === null ? null : circulatingShares - stableShares;
+      const factor = circulatingShares !== null && freeFloatShares !== null && freeFloatShares > 0
+        ? circulatingShares / freeFloatShares
+        : null;
+      const value: ActualTurnoverInfo = {
+        actualTurnover: latestDate && volumeLots !== null && freeFloatShares !== null && freeFloatShares > 0
+          ? (volumeLots * 100 * 100) / freeFloatShares
+          : null,
+        actualTurnoverFactor: factor,
+        actualTurnoverAsOf: latestDate || null,
+      };
+      if (factor === null) throw new Error("股本数据暂不完整");
+      actualTurnoverCache.set(stockKey, { fetchedAt: Date.now(), value });
+      return value;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  })();
+  actualTurnoverInflight.set(stockKey, request);
+  try {
+    return await request;
+  } finally {
+    actualTurnoverInflight.delete(stockKey);
+  }
+}
+
+async function fetchActualTurnover(stock: Stock): Promise<ActualTurnoverInfo> {
+  try {
+    return await fetchDirectActualTurnover(stock);
+  } catch {
+    return fetchJson<ActualTurnoverInfo>(`/api/market?action=actual-turnover&secid=${encodeURIComponent(keyOf(stock))}`, 4_500);
   }
 }
 
@@ -836,6 +912,7 @@ export function StockTerminal() {
   const quotesRef = useRef<Record<string, Quote>>({});
   const speedsRef = useRef<Record<string, number>>({});
   const turnoverRef = useRef<MarketTurnover | null>(null);
+  const actualTurnoverRef = useRef<Record<string, ActualTurnoverInfo>>({});
   const watchlist = watchGroups[watchGroup];
   const quoteUniverse = useMemo(() => {
     const unique = new Map<string, Stock>();
@@ -1146,8 +1223,19 @@ export function StockTerminal() {
       const includeKline = chartMode === "day" && (!sameStock || !previous?.klines.length);
       const canDelta = Boolean(silent && sameStock && !includeKline);
       const since = canDelta ? previous?.trends.at(-1)?.time || "" : "";
-      const data = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=${includeKline ? "1" : "0"}&since=${encodeURIComponent(since)}`);
+      const received = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=${includeKline ? "1" : "0"}&since=${encodeURIComponent(since)}`);
       if (requestId !== detailRequest.current) return;
+      const turnoverInfo = actualTurnoverRef.current[stockKey];
+      const data: Detail = turnoverInfo ? {
+        ...received,
+        quote: {
+          ...received.quote,
+          actualTurnover: turnoverInfo.actualTurnoverFactor !== null && received.quote.turnover !== null && received.quote.turnover !== undefined
+            ? received.quote.turnover * turnoverInfo.actualTurnoverFactor
+            : turnoverInfo.actualTurnover,
+          actualTurnoverAsOf: turnoverInfo.actualTurnoverAsOf,
+        },
+      } : received;
       setDetail((current) => {
         if (!canDelta || !current || keyOf(current.quote) !== stockKey) return data;
         const trends = new Map(current.trends.map((row) => [row.time, row]));
@@ -1184,6 +1272,31 @@ export function StockTerminal() {
     setDetail(null);
     refreshDetail(false);
   }, [activeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const stock = quoteUniverse.find((item) => keyOf(item) === activeKey);
+    if (!stock || (stock.market !== 0 && stock.market !== 1)) return;
+    let cancelled = false;
+    void fetchActualTurnover(stock).then((info) => {
+      if (cancelled || info.actualTurnoverFactor === null) return;
+      actualTurnoverRef.current[activeKey] = info;
+      setDetail((current) => {
+        if (!current || keyOf(current.quote) !== activeKey) return current;
+        const currentTurnover = current.quote.turnover;
+        return {
+          ...current,
+          quote: {
+            ...current.quote,
+            actualTurnover: currentTurnover !== null && currentTurnover !== undefined
+              ? currentTurnover * info.actualTurnoverFactor!
+              : info.actualTurnover,
+            actualTurnoverAsOf: info.actualTurnoverAsOf,
+          },
+        };
+      });
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeKey, quoteUniverse]);
 
   const activeKlineCount = activeDetail?.klines.length || 0;
   useEffect(() => {

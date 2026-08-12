@@ -69,6 +69,8 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /集合竞价/);
   assert.match(terminal, /实际换手率/);
   assert.match(terminal, /fetchDirectOpeningAuction/);
+  assert.match(terminal, /fetchActualTurnover/);
+  assert.match(terminal, /actualTurnoverFactor/);
   assert.match(terminal, /setChartDetail\(activeDetail\)/);
   assert.doesNotMatch(terminal, />(?:MARKET INTELLIGENCE|WATCHLIST|PRICE ACTION|MARKET PULSE|DATA HEALTH|INTRADAY MAIN FLOW|SECTOR FLOW|TOP 5)</);
   assert.match(terminal, /QUOTES_CACHE_KEY/);
@@ -110,6 +112,7 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(marketRoute, /smartbox\.gtimg\.cn\/s3/);
   assert.match(marketRoute, /loadEastmoneyQuotes\(missingAShares\)/);
   assert.match(marketRoute, /loadActualTurnover/);
+  assert.match(marketRoute, /action === "actual-turnover"/);
   assert.match(marketRoute, /RPT_F10_EH_FREEHOLDERS/);
   assert.match(marketRoute, /clock < "09:15:00" \|\| clock > "09:25:00"/);
   assert.match(specialRoute, /preferredRegion = "iad1"/);

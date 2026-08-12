@@ -520,7 +520,12 @@ async function loadActualTurnover(secid: string) {
     resilientJson(holderUrl, 6 * 60 * 60 * 1_000, { attempts: 1, timeoutMs: 1_600 }),
   ]);
   if (snapshotSettled.status !== "fulfilled" || holderSettled.status !== "fulfilled") {
-    return { actualTurnover: null, actualTurnoverAsOf: null, results: [] as Array<Awaited<ReturnType<typeof resilientJson>>> };
+    return {
+      actualTurnover: null,
+      actualTurnoverFactor: null,
+      actualTurnoverAsOf: null,
+      results: [] as Array<Awaited<ReturnType<typeof resilientJson>>>,
+    };
   }
 
   const snapshot = snapshotSettled.value.value?.data ?? {};
@@ -532,13 +537,30 @@ async function loadActualTurnover(secid: string) {
   const volumeLots = numeric(snapshot.f47);
   const circulatingShares = numeric(snapshot.f85);
   const freeFloatShares = circulatingShares === null ? null : circulatingShares - stableShares;
+  const actualTurnoverFactor = circulatingShares !== null && freeFloatShares !== null && freeFloatShares > 0
+    ? circulatingShares / freeFloatShares
+    : null;
   const actualTurnover = latestDate && volumeLots !== null && freeFloatShares !== null && freeFloatShares > 0
     ? (volumeLots * 100 * 100) / freeFloatShares
     : null;
   return {
     actualTurnover,
+    actualTurnoverFactor,
     actualTurnoverAsOf: latestDate || null,
     results: [snapshotSettled.value, holderSettled.value],
+  };
+}
+
+async function actualTurnover(secid: string) {
+  if (!/^[01]\.\d{6}$/.test(secid)) throw new Error("股票代码格式不正确");
+  const result = await loadActualTurnover(secid);
+  return {
+    actualTurnover: result.actualTurnover,
+    actualTurnoverFactor: result.actualTurnoverFactor,
+    actualTurnoverAsOf: result.actualTurnoverAsOf,
+    meta: result.results.length
+      ? { ...metaFrom(...result.results), source: "东方财富股本" }
+      : { mode: "offline" as const, updatedAt: Date.now(), source: "股本数据暂不可用" },
   };
 }
 
@@ -771,23 +793,15 @@ async function detail(secid: string, since = "", includeKline = true) {
       ? resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,45,qfq`, 90_000, { attempts: 1, timeoutMs: 2_000 })
       : Promise.resolve(null);
     const auctionPromise = since ? Promise.resolve({ rows: [], result: null }) : loadOpeningAuction(secid, shanghaiDate);
-    const actualTurnoverPromise = loadActualTurnover(secid);
-    const [quoteSettled, trendSettled, klineSettled, auctionSettled, actualTurnoverSettled] = await Promise.allSettled([
-      quotePromise, trendPromise, klinePromise, auctionPromise, actualTurnoverPromise,
+    const [quoteSettled, trendSettled, klineSettled, auctionSettled] = await Promise.allSettled([
+      quotePromise, trendPromise, klinePromise, auctionPromise,
     ]);
     const quoteResult = quoteSettled.status === "fulfilled" ? quoteSettled.value : null;
     const trendResult = trendSettled.status === "fulfilled" ? trendSettled.value : null;
     const klineResult = klineSettled.status === "fulfilled" ? klineSettled.value : null;
     const auctionResult = auctionSettled.status === "fulfilled" ? auctionSettled.value : { rows: [], result: null };
-    const actualTurnoverResult = actualTurnoverSettled.status === "fulfilled"
-      ? actualTurnoverSettled.value
-      : { actualTurnover: null, actualTurnoverAsOf: null, results: [] };
     const rawQuote = quoteResult ? parseTencentQuotes(quoteResult.value, [secid])[0] : null;
-    const quote = rawQuote ? {
-      ...rawQuote,
-      actualTurnover: actualTurnoverResult.actualTurnover,
-      actualTurnoverAsOf: actualTurnoverResult.actualTurnoverAsOf,
-    } : null;
+    const quote = rawQuote;
     const minutePayload = trendResult?.value?.data?.[symbol]?.data;
     const minuteDate = String(minutePayload?.date ?? "");
     const minuteTradingDate = /^\d{8}$/.test(minuteDate)
@@ -828,14 +842,14 @@ async function detail(secid: string, since = "", includeKline = true) {
         changePercent: close !== null && previousClose !== null && previousClose !== 0 ? ((close - previousClose) / previousClose) * 100 : null,
       };
     });
-    const available = [quoteResult, trendResult, klineResult, auctionResult.result, ...actualTurnoverResult.results].filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const available = [quoteResult, trendResult, klineResult, auctionResult.result].filter((item): item is NonNullable<typeof item> => Boolean(item));
     if (quote && trends.length && available.length) {
       return {
         quote,
         trends: since ? trends.filter((row) => row.time > since) : trends,
         klines,
         preClose: numeric(minutePayload?.prec) ?? quote.prevClose,
-        meta: { ...metaFrom(...available), source: actualTurnoverResult.actualTurnover === null ? "腾讯行情" : "腾讯行情 + 东方财富股本" },
+        meta: { ...metaFrom(...available), source: "腾讯行情" },
       };
     }
   }
@@ -871,7 +885,7 @@ async function detail(secid: string, since = "", includeKline = true) {
     };
   });
 
-  let quote: ReturnType<typeof parseQuote> & { actualTurnover?: number | null; actualTurnoverAsOf?: string | null } = parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {});
+  let quote: ReturnType<typeof parseQuote> = parseQuote(quoteResult?.value?.data?.diff?.[0] ?? {});
   let usedSina = false;
   const [marketText, code] = secid.split(".");
   const market = Number(marketText);
@@ -919,16 +933,9 @@ async function detail(secid: string, since = "", includeKline = true) {
       || new Intl.DateTimeFormat("en-CA", {
         timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
       }).format(new Date());
-    const [actualTurnoverResult, auctionResult] = await Promise.all([
-      loadActualTurnover(secid),
-      since ? Promise.resolve({ rows: [], result: null }) : loadOpeningAuction(secid, fallbackTradingDate),
-    ]);
-    quote = {
-      ...quote,
-      actualTurnover: actualTurnoverResult.actualTurnover,
-      actualTurnoverAsOf: actualTurnoverResult.actualTurnoverAsOf,
-    };
-    actualTurnoverResult.results.forEach((result) => available.push(result));
+    const auctionResult = since
+      ? { rows: [], result: null }
+      : await loadOpeningAuction(secid, fallbackTradingDate);
     if (auctionResult.result) available.push(auctionResult.result);
     if (auctionResult.rows.length) {
       const merged = new Map(trends.map((row) => [row.time, row]));
@@ -946,7 +953,7 @@ async function detail(secid: string, since = "", includeKline = true) {
     preClose: numeric(trendsResult?.value?.data?.preClose ?? trendsResult?.value?.data?.prePrice),
     meta: {
       ...metaFrom(...(realtimeAvailable.length ? realtimeAvailable : available)),
-      source: usedSina ? "东方财富 + 新浪行情" : quote.actualTurnover === null || quote.actualTurnover === undefined ? "东方财富" : "东方财富行情 + 股本",
+      source: usedSina ? "东方财富 + 新浪行情" : "东方财富",
     },
   };
 }
@@ -1471,6 +1478,7 @@ export async function GET(request: Request) {
       url.searchParams.get("since") ?? "",
       url.searchParams.get("full") !== "0",
     ));
+    if (action === "actual-turnover") return json(await actualTurnover(url.searchParams.get("secid") ?? ""));
     if (action === "speeds") return json(await fourMinuteSpeeds(normalizeSecids(url.searchParams.get("secids"))));
     if (action === "market-turnover") return json(await marketTurnover());
     if (action === "sectors") return json(await sectors(url.searchParams.get("type") ?? "concept"));
