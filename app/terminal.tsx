@@ -164,12 +164,61 @@ const feedAge = (updatedAt?: number, now = Date.now()) => {
   return minutes < 60 ? `数据年龄 ${minutes} 分钟` : `数据年龄 ${Math.floor(minutes / 60)} 小时`;
 };
 const isTextEntry = (target: EventTarget | null) => target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target instanceof HTMLButtonElement || target instanceof HTMLAnchorElement || (target instanceof HTMLElement && target.isContentEditable);
+const shanghaiMarketClock = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || "";
+  const hour = Number(part("hour"));
+  const minute = Number(part("minute"));
+  return {
+    date: `${part("year")}-${part("month")}-${part("day")}`,
+    clock: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+    weekday: part("weekday"),
+    minutes: hour * 60 + minute,
+  };
+};
 const isAShareTrading = (date = new Date()) => {
-  const day = date.getDay();
-  if (day === 0 || day === 6) return false;
-  const minutes = date.getHours() * 60 + date.getMinutes();
+  const { weekday, minutes } = shanghaiMarketClock(date);
+  if (weekday === "Sat" || weekday === "Sun") return false;
   return (minutes >= 9 * 60 + 15 && minutes <= 11 * 60 + 32) || (minutes >= 12 * 60 + 58 && minutes <= 15 * 60 + 2);
 };
+
+function mergeStreamingPrice(trends: Trend[], price: number | null | undefined, date = new Date()) {
+  if (price === null || price === undefined || !Number.isFinite(price) || !trends.length) return trends;
+  const moment = shanghaiMarketClock(date);
+  const continuous = (moment.minutes >= 9 * 60 + 30 && moment.minutes <= 11 * 60 + 30)
+    || (moment.minutes >= 13 * 60 && moment.minutes <= 15 * 60);
+  if (!continuous || moment.weekday === "Sat" || moment.weekday === "Sun") return trends;
+  const lastDatedRow = [...trends].reverse().find((row) => /^\d{4}-\d{2}-\d{2}/.test(row.time));
+  if (!lastDatedRow || lastDatedRow.time.slice(0, 10) !== moment.date) return trends;
+
+  const pointTime = `${moment.date} ${moment.clock}`;
+  const sameMinuteIndex = trends.findIndex((row) => !row.auction && row.time.slice(0, 16) === pointTime);
+  if (sameMinuteIndex >= 0) {
+    const current = trends[sameMinuteIndex];
+    if (current.price === price) return trends;
+    const next = [...trends];
+    next[sameMinuteIndex] = { ...current, price };
+    return next;
+  }
+
+  const lastContinuous = [...trends].reverse().find((row) => !row.auction);
+  return [...trends, {
+    time: pointTime,
+    price,
+    average: lastContinuous?.average ?? null,
+    volume: null,
+    amount: null,
+  }].sort((left, right) => left.time.localeCompare(right.time));
+}
 
 function DataStamp({ meta, label, compact = false }: { meta: MarketMeta | null | undefined; label: string; compact?: boolean }) {
   const [now, setNow] = useState(Date.now());
@@ -994,7 +1043,36 @@ export function StockTerminal() {
 
   const activeStock = quoteUniverse.find((stock) => keyOf(stock) === activeKey) || watchlist[0] || null;
   const activeDetail = detail && keyOf(detail.quote) === activeKey ? detail : null;
-  const activeQuote = activeDetail?.quote || (activeStock ? quotes[keyOf(activeStock)] : null);
+  const activeStreamingQuote = activeStock ? quotes[keyOf(activeStock)] : null;
+  const activeQuote = activeDetail?.quote || activeStreamingQuote;
+
+  useEffect(() => {
+    if (!activeStock || !activeStreamingQuote || (activeStock.market !== 0 && activeStock.market !== 1)) return;
+    setDetail((current) => {
+      if (!current || keyOf(current.quote) !== activeKey) return current;
+      const turnoverInfo = actualTurnoverRef.current[activeKey];
+      const nextTrends = mergeStreamingPrice(current.trends, activeStreamingQuote.price);
+      const nextActualTurnover = turnoverInfo?.actualTurnoverFactor !== null
+        && turnoverInfo?.actualTurnoverFactor !== undefined
+        && activeStreamingQuote.turnover !== null
+        && activeStreamingQuote.turnover !== undefined
+        ? activeStreamingQuote.turnover * turnoverInfo.actualTurnoverFactor
+        : current.quote.actualTurnover;
+      const nextQuote: Quote = {
+        ...current.quote,
+        ...activeStreamingQuote,
+        actualTurnover: nextActualTurnover,
+        actualTurnoverAsOf: current.quote.actualTurnoverAsOf,
+      };
+      const quoteUnchanged = nextQuote.price === current.quote.price
+        && nextQuote.changePercent === current.quote.changePercent
+        && nextQuote.amount === current.quote.amount
+        && nextQuote.turnover === current.quote.turnover
+        && nextQuote.speed === current.quote.speed;
+      if (quoteUnchanged && nextTrends === current.trends) return current;
+      return { ...current, quote: nextQuote, trends: nextTrends };
+    });
+  }, [activeKey, activeStock, activeStreamingQuote]);
 
   useEffect(() => {
     chartSignature.current = "";
@@ -1006,7 +1084,9 @@ export function StockTerminal() {
     const rows = chartMode === "time" ? activeDetail.trends : activeDetail.klines;
     if (!rows.length) return;
     const lastPoint = rows[rows.length - 1];
-    const pointKey = chartMode === "time" ? (lastPoint as Trend).time : (lastPoint as Kline).date;
+    const pointKey = chartMode === "time"
+      ? `${(lastPoint as Trend).time}|${(lastPoint as Trend).price}|${(lastPoint as Trend).average}|${(lastPoint as Trend).volume}`
+      : `${(lastPoint as Kline).date}|${(lastPoint as Kline).close}|${(lastPoint as Kline).volume}`;
     const signature = `${activeKey}|${chartMode}|${rows.length}|${pointKey}`;
     if (chartSignature.current === signature) return;
     chartSignature.current = signature;
@@ -1141,9 +1221,9 @@ export function StockTerminal() {
     const poll = async () => {
       const trading = isAShareTrading();
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "all");
-      timer = window.setTimeout(poll, trading ? 1_000 : 5_000);
+      timer = window.setTimeout(poll, trading ? 800 : 5_000);
     };
-    timer = window.setTimeout(poll, isAShareTrading() ? 1_000 : 5_000);
+    timer = window.setTimeout(poll, isAShareTrading() ? 800 : 5_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -1623,7 +1703,7 @@ export function StockTerminal() {
 
           <section className="chart-panel panel" title="拖动右下角可调整宽高">
             <div className="section-head"><div><span>行情走势</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="auction-line" />集合竞价</span><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "新增分时节点时更新 · 重点行情约1秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="auction-line" />集合竞价</span><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "实时价约1秒更新 · 均价与成交量约2秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
             <MarketChart key={`${activeKey}-${chartMode}`} detail={visibleChartDetail} mode={chartMode} />
           </section>
         </main>

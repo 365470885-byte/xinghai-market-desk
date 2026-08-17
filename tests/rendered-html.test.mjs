@@ -65,7 +65,8 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /涨停" : "跌停"}封单/);
   assert.match(terminal, /data-stock-key={key}/);
   assert.match(terminal, /keyOf\(detail\.quote\) === activeKey/);
-  assert.match(terminal, /新增分时节点时更新 · 重点行情约1秒/);
+  assert.match(terminal, /实时价约1秒更新 · 均价与成交量约2秒/);
+  assert.match(terminal, /mergeStreamingPrice/);
   assert.match(terminal, /集合竞价/);
   assert.match(terminal, /实际换手率/);
   assert.match(terminal, /fetchDirectOpeningAuction/);
@@ -107,6 +108,8 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(marketRoute, /Promise\.allSettled\(\[/);
   assert.match(marketRoute, /attempts: 1, timeoutMs: 3_500/);
   assert.match(marketRoute, /resilientTencentText/);
+  assert.match(marketRoute, /resilientTencentText\(`https:\/\/web\.sqt\.gtimg\.cn\/q=\$\{symbols\.join\(","\)\}`, 700/);
+  assert.match(marketRoute, /trends\.filter\(\(row\) => row\.time >= since\)/);
   assert.match(marketRoute, /https:\/\/web\.sqt\.gtimg\.cn\/q=/);
   assert.match(marketRoute, /appstock\/app\/minute\/query/);
   assert.match(marketRoute, /smartbox\.gtimg\.cn\/s3/);

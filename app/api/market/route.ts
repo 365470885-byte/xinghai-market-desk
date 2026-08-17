@@ -656,7 +656,7 @@ async function quotes(secids: string[]) {
       return market === "1" ? `sh${code}` : market === "0" ? `sz${code}` : "";
     }).filter(Boolean);
     if (!symbols.length) return { items: [], results: [], source: "腾讯行情" };
-    const result = await resilientTencentText(`https://web.sqt.gtimg.cn/q=${symbols.join(",")}`, 2_000, { attempts: 1, timeoutMs: 1_800 });
+    const result = await resilientTencentText(`https://web.sqt.gtimg.cn/q=${symbols.join(",")}`, 700, { attempts: 1, timeoutMs: 1_800 });
     return { items: parseTencentQuotes(result.value, requested), results: [result], source: "腾讯行情" };
   };
 
@@ -787,7 +787,7 @@ async function detail(secid: string, since = "", includeKline = true) {
     const shanghaiDate = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
     }).format(new Date());
-    const quotePromise = resilientTencentText(`https://web.sqt.gtimg.cn/q=${symbol}`, 2_000, { attempts: 1, timeoutMs: 1_800 });
+    const quotePromise = resilientTencentText(`https://web.sqt.gtimg.cn/q=${symbol}`, 700, { attempts: 1, timeoutMs: 1_800 });
     const trendPromise = resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${symbol}`, 2_000, { attempts: 1, timeoutMs: 1_800 });
     const klinePromise = includeKline
       ? resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,45,qfq`, 90_000, { attempts: 1, timeoutMs: 2_000 })
@@ -846,7 +846,7 @@ async function detail(secid: string, since = "", includeKline = true) {
     if (quote && trends.length && available.length) {
       return {
         quote,
-        trends: since ? trends.filter((row) => row.time > since) : trends,
+        trends: since ? trends.filter((row) => row.time >= since) : trends,
         klines,
         preClose: numeric(minutePayload?.prec) ?? quote.prevClose,
         meta: { ...metaFrom(...available), source: "腾讯行情" },
@@ -948,7 +948,7 @@ async function detail(secid: string, since = "", includeKline = true) {
 
   return {
     quote: { ...quote, market: Number(secid.split(".")[0]) },
-    trends: since ? trends.filter((row) => row.time > since) : trends,
+    trends: since ? trends.filter((row) => row.time >= since) : trends,
     klines,
     preClose: numeric(trendsResult?.value?.data?.preClose ?? trendsResult?.value?.data?.prePrice),
     meta: {
