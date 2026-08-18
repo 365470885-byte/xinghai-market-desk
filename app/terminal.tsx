@@ -518,6 +518,75 @@ function directSpecialQuote(stock: Stock, data: Record<string, unknown>): Quote 
   };
 }
 
+function directTencentQuote(stock: Stock, parts: string[]): Quote | null {
+  const price = finiteNumber(parts[3]) ?? finiteNumber(parts[4]);
+  const prevClose = finiteNumber(parts[4]);
+  if (price === null || prevClose === null) return null;
+  const high = finiteNumber(parts[33]);
+  const low = finiteNumber(parts[34]);
+  const amountWan = finiteNumber(parts[37]);
+  const marketCapYi = finiteNumber(parts[45]);
+  const limitUp = finiteNumber(parts[47]);
+  const limitDown = finiteNumber(parts[48]);
+  const samePrice = (left: number | null, right: number | null) => left !== null && right !== null && Math.abs(left - right) < 0.005;
+  const limitState: Quote["limitState"] = samePrice(price, limitUp) ? "up" : samePrice(price, limitDown) ? "down" : null;
+  const sealedLots = limitState === "up" ? finiteNumber(parts[10]) : limitState === "down" ? finiteNumber(parts[20]) : null;
+  return {
+    ...stock,
+    name: parts[1] || stock.name,
+    price,
+    prevClose,
+    open: finiteNumber(parts[5]),
+    high,
+    low,
+    volume: finiteNumber(parts[36] || parts[6]),
+    amount: amountWan === null ? null : amountWan * 10_000,
+    marketCap: marketCapYi === null ? null : marketCapYi * 100_000_000,
+    changePercent: finiteNumber(parts[32]) ?? (prevClose ? ((price - prevClose) / prevClose) * 100 : null),
+    speed: null,
+    turnover: finiteNumber(parts[38]),
+    amplitude: finiteNumber(parts[43]),
+    netInflow: null,
+    limitState,
+    sealedAmount: sealedLots === null ? null : sealedLots * price * 100,
+  };
+}
+
+function loadDirectTencentQuotes(stocks: Stock[], timeoutMs = 1_200): Promise<Quote[]> {
+  const requested = stocks.filter((stock) => stock.market === 0 || stock.market === 1);
+  if (!requested.length) return Promise.resolve([]);
+  const globals = window as unknown as Record<string, unknown>;
+  const symbols = requested.map((stock) => `${stock.market === 1 ? "sh" : "sz"}${stock.code}`);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.async = true;
+    script.charset = "gbk";
+    let done = false;
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      script.remove();
+    };
+    const finish = (action: () => void) => {
+      if (done) return;
+      done = true;
+      action();
+      cleanup();
+    };
+    const timer = window.setTimeout(() => finish(() => reject(new Error("沪深行情直连超时"))), timeoutMs);
+    script.onerror = () => finish(() => reject(new Error("沪深行情直连失败")));
+    script.onload = () => {
+      const items = requested.map((stock, index) => {
+        const raw = String(globals[`v_${symbols[index]}`] ?? "");
+        return raw ? directTencentQuote(stock, raw.split("~")) : null;
+      }).filter((item): item is Quote => Boolean(item));
+      if (!items.length) finish(() => reject(new Error("沪深行情直连为空")));
+      else finish(() => resolve(items));
+    };
+    script.src = `https://qt.gtimg.cn/q=${symbols.join(",")}&_=${Date.now()}`;
+    document.head.appendChild(script);
+  });
+}
+
 function loadDirectSinaSpecial(stocks: Stock[], timeoutMs = 2_500): Promise<Quote[]> {
   const globals = window as unknown as Record<string, unknown>;
   const symbols = stocks.map((stock) => stock.market === 100 ? "b_KOSPI" : "hf_CHA50CFD");
@@ -625,6 +694,55 @@ async function fetchSpecialQuotes(stocks: Stock[]) {
     if (direct.items.length) return direct;
     throw error;
   }
+}
+
+async function fetchAShareQuotes(stocks: Stock[]) {
+  const direct = await loadDirectTencentQuotes(stocks).catch(() => [] as Quote[]);
+  if (direct.length === stocks.length) {
+    return {
+      items: direct,
+      meta: { mode: "live", updatedAt: Date.now(), source: "腾讯行情直连" } as MarketMeta,
+    };
+  }
+
+  const missing = stocks.filter((stock) => !direct.some((item) => keyOf(item) === keyOf(stock)));
+  const remote = missing.length
+    ? await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(missing.map(keyOf).join(","))}`).catch(() => ({
+      items: [] as Quote[],
+      meta: { mode: direct.length ? "stale" : "offline", updatedAt: direct.length ? Date.now() : 0, source: "服务端备用暂不可用" } as MarketMeta,
+    }))
+    : { items: [] as Quote[], meta: { mode: "live", updatedAt: Date.now(), source: "腾讯行情直连" } as MarketMeta };
+  const merged = new Map(remote.items.map((item) => [keyOf(item), item]));
+  direct.forEach((item) => merged.set(keyOf(item), item));
+  return {
+    items: stocks.map((stock) => merged.get(keyOf(stock))).filter((item): item is Quote => Boolean(item)),
+    meta: {
+      mode: merged.size >= stocks.length ? "live" : "stale",
+      updatedAt: Math.max(direct.length ? Date.now() : 0, remote.meta.updatedAt),
+      source: direct.length ? "腾讯直连 + 服务端备用" : remote.meta.source,
+    } as MarketMeta,
+  };
+}
+
+async function fetchFastQuotes(stocks: Stock[]) {
+  const aShares = stocks.filter((stock) => stock.market === 0 || stock.market === 1);
+  const special = stocks.filter((stock) => stock.market !== 0 && stock.market !== 1);
+  const settled = await Promise.allSettled([
+    aShares.length ? fetchAShareQuotes(aShares) : Promise.resolve(null),
+    special.length ? fetchSpecialQuotes(special) : Promise.resolve(null),
+  ]);
+  const feeds = settled.flatMap((entry) => entry.status === "fulfilled" && entry.value ? [entry.value] : []);
+  const merged = new Map(feeds.flatMap((feed) => feed.items).map((item) => [keyOf(item), item]));
+  const items = stocks.map((stock) => merged.get(keyOf(stock))).filter((item): item is Quote => Boolean(item));
+  if (!items.length) throw new Error("实时行情暂时无法连接");
+  return {
+    items,
+    meta: {
+      mode: items.length === stocks.length && feeds.every((feed) => feed.meta.mode === "live") ? "live" : "stale",
+      updatedAt: Math.max(...feeds.map((feed) => feed.meta.updatedAt)),
+      source: Array.from(new Set(feeds.map((feed) => feed.meta.source))).join(" + "),
+    } as MarketMeta,
+  };
 }
 
 function useCanvas(draw: (ctx: CanvasRenderingContext2D, width: number, height: number) => void, dependencies: unknown[]) {
@@ -1177,7 +1295,7 @@ export function StockTerminal() {
     quoteBusy.current[scope] = true;
     if (!silent) setRefreshing(true);
     try {
-      const priorityKeys = new Set([activeKey, "1.000001", "0.399001", ...Array.from(pinned)]);
+      const priorityKeys = new Set([activeKey, "1.000001", "0.399001"]);
       const requestedStocks = scope === "all"
         ? quoteUniverse.filter((stock) => stock.market === 0 || stock.market === 1)
         : scope === "overseas"
@@ -1185,10 +1303,7 @@ export function StockTerminal() {
           : quoteUniverse.filter((stock) => priorityKeys.has(keyOf(stock))).slice(0, 14);
       if (scope === "overseas") requestedStocks.push(...quoteUniverse.filter((stock) => stock.market === 102));
       if (!requestedStocks.length) return;
-      const secids = requestedStocks.map(keyOf).join(",");
-      const data = scope === "overseas"
-        ? await fetchSpecialQuotes(requestedStocks)
-        : await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(secids)}`);
+      const data = await fetchFastQuotes(requestedStocks);
       if (requestId !== quoteRequest.current[scope]) return;
       updateRollingSpeeds(data.items);
       setQuotes((current) => {
@@ -1209,7 +1324,7 @@ export function StockTerminal() {
       if (requestId === quoteRequest.current[scope]) quoteBusy.current[scope] = false;
       if (!silent) setRefreshing(false);
     }
-  }, [activeKey, markFeedFailure, pinned, quoteUniverse, updateConnection, updateRollingSpeeds]);
+  }, [activeKey, markFeedFailure, quoteUniverse, updateConnection, updateRollingSpeeds]);
 
   useEffect(() => {
     refreshQuotes(false, "all");
@@ -1221,9 +1336,9 @@ export function StockTerminal() {
     const poll = async () => {
       const trading = isAShareTrading();
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "all");
-      timer = window.setTimeout(poll, trading ? 800 : 5_000);
+      timer = window.setTimeout(poll, trading ? 650 : 5_000);
     };
-    timer = window.setTimeout(poll, isAShareTrading() ? 800 : 5_000);
+    timer = window.setTimeout(poll, isAShareTrading() ? 200 : 5_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -1394,6 +1509,22 @@ export function StockTerminal() {
     timer = window.setTimeout(poll, 2_000);
     return () => window.clearTimeout(timer);
   }, [activeKey, page, pollingPaused, refreshDetail, watchlist]);
+
+  useEffect(() => {
+    const resume = () => {
+      if (pollingPaused || document.visibilityState !== "visible") return;
+      void refreshQuotes(true, isAShareTrading() ? "priority" : "all");
+      if (page === "watch") void refreshDetail(true);
+    };
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("focus", resume);
+    window.addEventListener("online", resume);
+    return () => {
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("focus", resume);
+      window.removeEventListener("online", resume);
+    };
+  }, [page, pollingPaused, refreshDetail, refreshQuotes]);
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
@@ -1703,7 +1834,7 @@ export function StockTerminal() {
 
           <section className="chart-panel panel" title="拖动右下角可调整宽高">
             <div className="section-head"><div><span>行情走势</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="auction-line" />集合竞价</span><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "实时价约1秒更新 · 均价与成交量约2秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="auction-line" />集合竞价</span><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "实时价约0.7秒直连 · 均价与成交量约2秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
             <MarketChart key={`${activeKey}-${chartMode}`} detail={visibleChartDetail} mode={chartMode} />
           </section>
         </main>
