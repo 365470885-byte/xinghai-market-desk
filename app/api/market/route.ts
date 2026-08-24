@@ -1363,7 +1363,10 @@ async function capital() {
   };
 }
 
-async function rankings() {
+type RankingSort = "rise" | "fall" | "speed3" | "amount";
+
+async function rankings(requestedSort: string) {
+  const sort: RankingSort = ["rise", "fall", "speed3", "amount"].includes(requestedSort) ? requestedSort as RankingSort : "rise";
   const loadSina = async (ascending: boolean) => {
     const pages = await Promise.all([1, 2].map((page) => resilientText(
       `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=100&sort=changepercent&asc=${ascending ? 1 : 0}&node=hs_a&symbol=`,
@@ -1407,47 +1410,41 @@ async function rankings() {
     return { items, results: pages };
   };
 
-  const sinaSettled = await Promise.allSettled([loadSina(false), loadSina(true)]);
-  if (sinaSettled[0].status === "fulfilled" && sinaSettled[1].status === "fulfilled") {
-    const gainers = sinaSettled[0].value;
-    const losers = sinaSettled[1].value;
-    if (gainers.items.length === 100 && losers.items.length === 100) {
-      const metadata = metaFrom(...gainers.results, ...losers.results);
-      return {
-        gainers: gainers.items,
-        losers: losers.items,
-        meta: { ...metadata, source: "新浪财经 · 沪深A股" },
-      };
-    }
-  }
-
   const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
   const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f100";
-  const load = (order: 0 | 1) => resilientJson(
-    `${EASTMONEY}/clist/get?pn=1&pz=100&po=${order}&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(universe)}&fields=${fields}`,
+  const config: Record<RankingSort, { field: "f3" | "f22" | "f6"; order: 0 | 1 }> = {
+    rise: { field: "f3", order: 1 },
+    fall: { field: "f3", order: 0 },
+    speed3: { field: "f22", order: 1 },
+    amount: { field: "f6", order: 1 },
+  };
+  const selected = config[sort];
+  const eastmoney = await Promise.allSettled([resilientJson(
+    `${EASTMONEY}/clist/get?pn=1&pz=100&po=${selected.order}&np=1&fltt=2&invt=2&fid=${selected.field}&fs=${encodeURIComponent(universe)}&fields=${fields}`,
     3_000,
     { attempts: 1, timeoutMs: 3_500 },
-  );
-  const settled = await Promise.allSettled([load(1), load(0)]);
-  const available = settled
-    .filter((item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof resilientJson>>> => item.status === "fulfilled")
-    .map((item) => item.value);
-  if (!available.length) throw new Error("涨跌排行暂时无法连接");
+  )]);
+  const eastmoneyResult = eastmoney[0].status === "fulfilled" ? eastmoney[0].value : null;
   const parseRows = (result: Awaited<ReturnType<typeof resilientJson>> | null) => (result?.value?.data?.diff ?? [])
     .map((item: Record<string, unknown>) => ({ ...parseQuote(item), sector: String(item.f100 || "板块待更新") }))
     .filter((item: ReturnType<typeof parseQuote>) => item.code && item.name && item.price !== null)
     .slice(0, 100);
-  const gainersResult = settled[0].status === "fulfilled" ? settled[0].value : null;
-  const losersResult = settled[1].status === "fulfilled" ? settled[1].value : null;
-  return {
-    gainers: parseRows(gainersResult),
-    losers: parseRows(losersResult),
-    meta: {
-      ...metaFrom(...available),
-      mode: settled.some((item) => item.status === "rejected") ? "stale" as CacheMode : metaFrom(...available).mode,
-      source: "东方财富 · 沪深A股",
-    },
+  const eastmoneyItems = parseRows(eastmoneyResult);
+  if (eastmoneyResult && eastmoneyItems.length === 100) return {
+    items: eastmoneyItems,
+    sort,
+    meta: { ...metaFrom(eastmoneyResult), source: "东方财富 · 沪深A股" },
   };
+
+  if (sort === "rise" || sort === "fall") {
+    const sina = await loadSina(sort === "fall");
+    if (sina.items.length === 100) return {
+      items: sina.items,
+      sort,
+      meta: { ...metaFrom(...sina.results), source: "新浪财经 · 沪深A股" },
+    };
+  }
+  throw new Error("股票排行暂时无法连接");
 }
 
 async function search(keyword: string) {
@@ -1484,7 +1481,7 @@ export async function GET(request: Request) {
     if (action === "sectors") return json(await sectors(url.searchParams.get("type") ?? "concept"));
     if (action === "sector-stocks") return json(await sectorStocks(url.searchParams.get("code") ?? ""));
     if (action === "capital") return json(await capital());
-    if (action === "rankings") return json(await rankings());
+    if (action === "rankings") return json(await rankings(url.searchParams.get("sort") ?? "rise"));
     if (action === "search") return json(await search(url.searchParams.get("q") ?? ""));
     return json({ error: "未知数据请求" }, 400);
   } catch (error) {

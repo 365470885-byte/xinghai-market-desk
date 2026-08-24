@@ -9,6 +9,7 @@ type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: num
 type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings";
 type FeedSnapshot = MarketMeta & { label: string };
 type WatchSort = "manual" | "change" | "speed" | "amount";
+type RankingSort = "rise" | "fall" | "speed3" | "amount";
 type WatchGroupKey = "main" | "etf";
 type Stock = { code: string; market: number; name: string };
 type Quote = Stock & {
@@ -40,7 +41,7 @@ type CapitalData = {
   outflow: Array<{ code: string; name: string; amount: number | null }>;
   meta: MarketMeta;
 };
-type RankingData = { gainers: Quote[]; losers: Quote[]; meta: MarketMeta };
+type RankingData = { items: Quote[]; sort: RankingSort; meta: MarketMeta };
 
 const DEFAULT_STOCKS: Stock[] = [
   { code: "CNOW", market: 101, name: "富时A50期指" },
@@ -446,44 +447,48 @@ async function fetchDirectCapital(): Promise<CapitalData> {
   }
 }
 
-async function fetchDirectRankings(): Promise<RankingData> {
+async function fetchDirectRankings(sort: RankingSort): Promise<RankingData> {
   const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
-  const fields = "f2,f3,f5,f6,f8,f12,f13,f14,f15,f16,f17,f18,f20,f100";
-  const loadSide = async (order: 0 | 1) => {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 5_000);
-    try {
-      const url = `https://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=${order}&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(universe)}&fields=${fields}`;
-      const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
-      if (!response.ok) throw new Error("排行直连暂不可用");
-      const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
-      return (payload.data?.diff || []).map((item): Quote => ({
-        code: String(item.f12 ?? ""),
-        market: finiteNumber(item.f13) === 1 ? 1 : 0,
-        name: String(item.f14 ?? ""),
-        price: finiteNumber(item.f2),
-        changePercent: finiteNumber(item.f3),
-        speed: null,
-        high: finiteNumber(item.f15),
-        low: finiteNumber(item.f16),
-        open: finiteNumber(item.f17),
-        prevClose: finiteNumber(item.f18),
-        volume: finiteNumber(item.f5),
-        amount: finiteNumber(item.f6),
-        marketCap: finiteNumber(item.f20),
-        turnover: finiteNumber(item.f8),
-        sector: String(item.f100 || "板块待更新"),
-      })).filter((item) => item.code && item.name && item.price !== null).slice(0, 100);
-    } finally {
-      window.clearTimeout(timer);
-    }
+  const fields = "f2,f3,f5,f6,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f100";
+  const config: Record<RankingSort, { field: "f3" | "f22" | "f6"; order: 0 | 1 }> = {
+    rise: { field: "f3", order: 1 },
+    fall: { field: "f3", order: 0 },
+    speed3: { field: "f22", order: 1 },
+    amount: { field: "f6", order: 1 },
   };
-
-  const [gainers, losers] = await Promise.all([loadSide(1), loadSide(0)]);
-  if (gainers.length < 100 || losers.length < 100) throw new Error("排行直连数据不完整");
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 5_000);
+  let items: Quote[] = [];
+  try {
+    const { field, order } = config[sort];
+    const url = `https://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=${order}&np=1&fltt=2&invt=2&fid=${field}&fs=${encodeURIComponent(universe)}&fields=${fields}`;
+    const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+    if (!response.ok) throw new Error("排行直连暂不可用");
+    const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
+    items = (payload.data?.diff || []).map((item): Quote => ({
+      code: String(item.f12 ?? ""),
+      market: finiteNumber(item.f13) === 1 ? 1 : 0,
+      name: String(item.f14 ?? ""),
+      price: finiteNumber(item.f2),
+      changePercent: finiteNumber(item.f3),
+      speed: finiteNumber(item.f22),
+      high: finiteNumber(item.f15),
+      low: finiteNumber(item.f16),
+      open: finiteNumber(item.f17),
+      prevClose: finiteNumber(item.f18),
+      volume: finiteNumber(item.f5),
+      amount: finiteNumber(item.f6),
+      marketCap: finiteNumber(item.f20),
+      turnover: finiteNumber(item.f8),
+      sector: String(item.f100 || "板块待更新"),
+    })).filter((item) => item.code && item.name && item.price !== null).slice(0, 100);
+  } finally {
+    window.clearTimeout(timer);
+  }
+  if (items.length < 100) throw new Error("排行直连数据不完整");
   return {
-    gainers,
-    losers,
+    items,
+    sort,
     meta: { mode: "live", updatedAt: Date.now(), source: "东方财富 · 浏览器直连" },
   };
 }
@@ -1958,31 +1963,44 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
 }
 
 function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
-  const [data, setData] = useState<RankingData | null>(null);
+  const [sort, setSort] = useState<RankingSort>("rise");
+  const [dataBySort, setDataBySort] = useState<Partial<Record<RankingSort, RankingData>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const dataRef = useRef<RankingData | null>(null);
+  const dataRef = useRef<Partial<Record<RankingSort, RankingData>>>({});
+  const requestRef = useRef(0);
+  const data = dataBySort[sort] || null;
+  const options: Array<{ key: RankingSort; label: string; title: string; description: string }> = [
+    { key: "rise", label: "按涨幅", title: "涨幅排序", description: "涨幅最高" },
+    { key: "fall", label: "按跌幅", title: "跌幅排序", description: "跌幅最大" },
+    { key: "speed3", label: "按3分钟涨速", title: "3分钟涨速排序", description: "短时上涨最快" },
+    { key: "amount", label: "按成交额", title: "成交额排序", description: "成交最活跃" },
+  ];
+  const currentOption = options.find((option) => option.key === sort) || options[0];
   const load = useCallback(async () => {
-    if (!dataRef.current) setLoading(true);
+    const requestId = ++requestRef.current;
+    setLoading(true);
     try {
       let next: RankingData;
       try {
-        next = await fetchDirectRankings();
+        next = await fetchDirectRankings(sort);
       } catch {
-        next = await fetchJson<RankingData>("/api/market?action=rankings", 12_000, 0);
+        next = await fetchJson<RankingData>(`/api/market?action=rankings&sort=${sort}`, 12_000, 0);
       }
-      dataRef.current = next;
-      setData(next);
+      dataRef.current[sort] = next;
+      setDataBySort((previous) => ({ ...previous, [sort]: next }));
+      if (requestId !== requestRef.current) return;
       setError("");
       updateConnection(next.meta, "rankings");
     } catch (err) {
-      const previous = dataRef.current;
+      if (requestId !== requestRef.current) return;
+      const previous = dataRef.current[sort];
       setError(err instanceof Error ? err.message : "涨跌排行加载失败");
       updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "涨跌排行暂不可用" }, "rankings");
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current) setLoading(false);
     }
-  }, [updateConnection]);
+  }, [sort, updateConnection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1995,34 +2013,38 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [load]);
 
-  const board = (title: string, description: string, items: Quote[], direction: "up" | "down") => <section className="ranking-board panel">
+  const metricClass = (metric: "change" | "speed3" | "amount") => `ranking-value${((metric === "change" && (sort === "rise" || sort === "fall")) || metric === sort) ? " is-primary" : ""}`;
+  const board = (items: Quote[]) => <section className="ranking-board panel">
     <div className="ranking-board-head">
-      <div><span>{description}</span><strong>{title}</strong></div>
-      <em className={direction}>{items.length} 只</em>
+      <div><span>{currentOption.description}</span><strong>{currentOption.title}</strong></div>
+      <em>{items.length} 只</em>
     </div>
-    <div className="ranking-columns" aria-hidden="true"><span>排名</span><span>股票 / 所属板块</span><span>最新价</span><span>涨跌幅</span><span>成交额</span><span>总市值</span></div>
-    <div className="ranking-list" aria-label={title}>
+    <div className="ranking-columns" aria-hidden="true"><span>排名</span><span>股票 / 所属板块</span><span className="ranking-latest">最新价</span><span className={metricClass("change")}>涨跌幅</span><span className={metricClass("speed3")}>3分钟涨速</span><span className={metricClass("amount")}>成交额</span><span className="ranking-market-cap">总市值</span></div>
+    <div className="ranking-list" aria-label={`${currentOption.title}前100`}>
       {loading && !items.length ? <LoadingRows count={12} /> : items.map((stock, index) => <button type="button" className="ranking-row" key={keyOf(stock)} onClick={() => onPick(stock)} title={`查看 ${stock.name} 详情`}>
         <span>{String(index + 1).padStart(3, "0")}</span>
         <span className="ranking-stock"><span className="ranking-name-line"><strong>{stock.name}</strong><em title={stock.sector || "板块待更新"}>{stock.sector || "板块待更新"}</em></span><small>{stock.code}</small></span>
-        <span>{number(stock.price)}</span>
-        <span className={tone(stock.changePercent)}>{signed(stock.changePercent)}</span>
-        <span>{amount(stock.amount)}</span>
-        <span>{marketAmount(stock.marketCap)}</span>
+        <span className="ranking-latest">{number(stock.price)}</span>
+        <span className={`${metricClass("change")} ${tone(stock.changePercent)}`}>{signed(stock.changePercent)}</span>
+        <span className={`${metricClass("speed3")} ${tone(stock.speed)}`}>{signed(stock.speed)}</span>
+        <span className={metricClass("amount")}>{amount(stock.amount)}</span>
+        <span className="ranking-market-cap">{marketAmount(stock.marketCap)}</span>
       </button>)}
-      {!loading && !items.length && <EmptyState title={`${title}暂无数据`} detail="行情源正在恢复，请稍后重试" />}
+      {!loading && !items.length && <EmptyState title={`${currentOption.title}暂无数据`} detail="行情源正在恢复，请稍后重试" />}
     </div>
   </section>;
 
   return <main className="rankings-page" id="main-content">
     <header className="rankings-header panel">
-      <div><span>沪深A股实时排序</span><h1>涨跌排行</h1><p>按当前涨跌幅排序，点击任意股票可进入个股详情。</p></div>
-      <div className="rankings-status"><DataStamp meta={data?.meta} label="涨跌排行" compact /><button type="button" onClick={load} disabled={loading}>{loading ? "同步中…" : "立即刷新"}</button></div>
+      <div className="rankings-intro"><span>沪深A股实时排序</span><h1>股票排行</h1><p>每次显示当前排序的全市场前100，点击股票可进入个股详情。</p></div>
+      <div className="rankings-tools">
+        <div className="ranking-sort" role="group" aria-label="排行排列方式"><span>排列</span>{options.map((option) => <button type="button" key={option.key} aria-pressed={sort === option.key} className={sort === option.key ? "active" : ""} onClick={() => setSort(option.key)}>{option.label}</button>)}</div>
+        <div className="rankings-status"><DataStamp meta={data?.meta} label={currentOption.title} compact /><button type="button" onClick={load} disabled={loading}>{loading ? "同步中…" : "立即刷新"}</button></div>
+      </div>
     </header>
     {error && <div className="ranking-warning" role="status"><strong>{data ? "榜单刷新暂时中断" : "榜单连接失败"}</strong><span>{error}{data ? "，当前保留最近一次有效结果。" : ""}</span></div>}
     <div className="rankings-grid">
-      {board("涨幅前100", "上涨领先", data?.gainers || [], "up")}
-      {board("跌幅前100", "下跌领先", data?.losers || [], "down")}
+      {board(data?.items || [])}
     </div>
   </main>;
 }
