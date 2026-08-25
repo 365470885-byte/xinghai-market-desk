@@ -754,7 +754,7 @@ async function quotes(secids: string[]) {
   };
 }
 
-async function detail(secid: string, since = "", includeKline = true) {
+async function detail(secid: string, since = "", includeKline = true, includeAuction = true) {
   if (!/^\d{1,3}\.[A-Z0-9]{4,8}$/i.test(secid)) throw new Error("证券代码格式不正确");
   const [specialMarketText, specialCode] = secid.split(".");
   const specialMarket = Number(specialMarketText);
@@ -792,7 +792,7 @@ async function detail(secid: string, since = "", includeKline = true) {
     const klinePromise = includeKline
       ? resilientJson(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,45,qfq`, 90_000, { attempts: 1, timeoutMs: 2_000 })
       : Promise.resolve(null);
-    const auctionPromise = since ? Promise.resolve({ rows: [], result: null }) : loadOpeningAuction(secid, shanghaiDate);
+    const auctionPromise = since || !includeAuction ? Promise.resolve({ rows: [], result: null }) : loadOpeningAuction(secid, shanghaiDate);
     const [quoteSettled, trendSettled, klineSettled, auctionSettled] = await Promise.allSettled([
       quotePromise, trendPromise, klinePromise, auctionPromise,
     ]);
@@ -933,7 +933,7 @@ async function detail(secid: string, since = "", includeKline = true) {
       || new Intl.DateTimeFormat("en-CA", {
         timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
       }).format(new Date());
-    const auctionResult = since
+    const auctionResult = since || !includeAuction
       ? { rows: [], result: null }
       : await loadOpeningAuction(secid, fallbackTradingDate);
     if (auctionResult.result) available.push(auctionResult.result);
@@ -1510,6 +1510,7 @@ export async function GET(request: Request) {
       url.searchParams.get("secid") ?? "",
       url.searchParams.get("since") ?? "",
       url.searchParams.get("full") !== "0",
+      url.searchParams.get("auction") !== "0",
     ));
     if (action === "actual-turnover") return json(await actualTurnover(url.searchParams.get("secid") ?? ""));
     if (action === "speeds") return json(await fourMinuteSpeeds(normalizeSecids(url.searchParams.get("secids"))));

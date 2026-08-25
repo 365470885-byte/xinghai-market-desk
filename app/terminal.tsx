@@ -258,6 +258,79 @@ async function fetchJson<T>(url: string, timeout = 12_000, retries = 0): Promise
   throw lastError instanceof Error ? lastError : new Error("数据服务暂不可用");
 }
 
+async function fetchDirectIntraday(stock: Stock, fallbackQuote?: Quote | null): Promise<Detail> {
+  if (stock.market !== 0 && stock.market !== 1) throw new Error("该证券暂不支持分时直连");
+  const symbol = `${stock.market === 1 ? "sh" : "sz"}${stock.code}`;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 1_600);
+  try {
+    const response = await fetch(`https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${symbol}`, {
+      signal: controller.signal,
+      cache: "no-store",
+      mode: "cors",
+    });
+    if (!response.ok) throw new Error("腾讯分时直连暂不可用");
+    const payload = await response.json() as {
+      data?: Record<string, { data?: { date?: string; prec?: string | number; data?: string[] } }>;
+    };
+    const minutePayload = payload.data?.[symbol]?.data;
+    const rawDate = String(minutePayload?.date || "");
+    if (!/^\d{8}$/.test(rawDate)) throw new Error("腾讯分时日期无效");
+    const tradingDate = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
+    const trends = (minutePayload?.data || []).map((row): Trend | null => {
+      const [hhmm = "", priceText, volumeText, amountText] = row.split(" ");
+      const clock = Number(hhmm);
+      const price = finiteNumber(priceText);
+      const volume = finiteNumber(volumeText);
+      const cumulativeAmount = finiteNumber(amountText);
+      if (price === null || !((clock >= 930 && clock <= 1130) || (clock >= 1300 && clock <= 1500))) return null;
+      return {
+        time: `${tradingDate} ${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}`,
+        price,
+        average: cumulativeAmount !== null && volume !== null && volume > 0 ? cumulativeAmount / (volume * 100) : null,
+        volume,
+        amount: cumulativeAmount,
+      };
+    }).filter((row): row is Trend => Boolean(row));
+    if (!trends.length) throw new Error("腾讯分时暂未返回数据");
+    const lastPrice = trends.at(-1)?.price ?? null;
+    const preClose = finiteNumber(minutePayload?.prec) ?? fallbackQuote?.prevClose ?? null;
+    const quote: Quote = {
+      code: stock.code,
+      market: stock.market,
+      name: fallbackQuote?.name || stock.name,
+      price: fallbackQuote?.price ?? lastPrice,
+      changePercent: fallbackQuote?.changePercent
+        ?? (lastPrice !== null && preClose !== null && preClose !== 0 ? ((lastPrice - preClose) / preClose) * 100 : null),
+      speed: fallbackQuote?.speed ?? null,
+      high: fallbackQuote?.high ?? null,
+      low: fallbackQuote?.low ?? null,
+      open: fallbackQuote?.open ?? trends[0]?.price ?? null,
+      prevClose: preClose,
+      volume: fallbackQuote?.volume ?? trends.at(-1)?.volume ?? null,
+      amount: fallbackQuote?.amount ?? trends.at(-1)?.amount ?? null,
+      marketCap: fallbackQuote?.marketCap ?? null,
+      turnover: fallbackQuote?.turnover ?? null,
+      amplitude: fallbackQuote?.amplitude ?? null,
+      netInflow: fallbackQuote?.netInflow ?? null,
+      actualTurnover: fallbackQuote?.actualTurnover ?? null,
+      actualTurnoverAsOf: fallbackQuote?.actualTurnoverAsOf ?? null,
+      limitState: fallbackQuote?.limitState ?? null,
+      sealedAmount: fallbackQuote?.sealedAmount ?? null,
+      sector: fallbackQuote?.sector ?? null,
+    };
+    return {
+      quote,
+      trends,
+      klines: [],
+      preClose,
+      meta: { mode: "live", updatedAt: Date.now(), source: "腾讯分时直连" },
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 const finiteNumber = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -1125,6 +1198,7 @@ export function StockTerminal() {
   const speedsRef = useRef<Record<string, number>>({});
   const turnoverRef = useRef<MarketTurnover | null>(null);
   const actualTurnoverRef = useRef<Record<string, ActualTurnoverInfo>>({});
+  const detailCache = useRef(new Map<string, Detail>());
   const watchlist = watchGroups[watchGroup];
   const quoteUniverse = useMemo(() => {
     const unique = new Map<string, Stock>();
@@ -1233,7 +1307,9 @@ export function StockTerminal() {
         && nextQuote.turnover === current.quote.turnover
         && nextQuote.speed === current.quote.speed;
       if (quoteUnchanged && nextTrends === current.trends) return current;
-      return { ...current, quote: nextQuote, trends: nextTrends };
+      const next = { ...current, quote: nextQuote, trends: nextTrends };
+      detailCache.current.set(activeKey, next);
+      return next;
     });
   }, [activeKey, activeStock, activeStreamingQuote]);
 
@@ -1264,8 +1340,9 @@ export function StockTerminal() {
     // paint over the newly selected row.
     detailRequest.current += 1;
     detailBusy.current = null;
-    detailRef.current = null;
-    setDetail(null);
+    const cached = detailCache.current.get(key) || null;
+    detailRef.current = cached;
+    setDetail(cached);
     setActiveKey(key);
   }, [activeKey]);
 
@@ -1463,7 +1540,16 @@ export function StockTerminal() {
       const includeKline = chartMode === "day" && (!sameStock || !previous?.klines.length);
       const canDelta = Boolean(silent && sameStock && !includeKline);
       const since = canDelta ? previous?.trends.at(-1)?.time || "" : "";
-      const received = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=${includeKline ? "1" : "0"}&since=${encodeURIComponent(since)}`);
+      let received: Detail;
+      if (chartMode === "time" && (stock.market === 0 || stock.market === 1)) {
+        try {
+          received = await fetchDirectIntraday(stock, quotesRef.current[stockKey] || previous?.quote);
+        } catch {
+          received = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=0&auction=0&since=${encodeURIComponent(since)}`, 5_000);
+        }
+      } else {
+        received = await fetchJson<Detail>(`/api/market?action=detail&secid=${encodeURIComponent(stockKey)}&full=${includeKline ? "1" : "0"}&auction=0&since=${encodeURIComponent(since)}`, includeKline ? 7_000 : 5_000);
+      }
       if (requestId !== detailRequest.current) return;
       const turnoverInfo = actualTurnoverRef.current[stockKey];
       const data: Detail = turnoverInfo ? {
@@ -1476,12 +1562,16 @@ export function StockTerminal() {
           actualTurnoverAsOf: turnoverInfo.actualTurnoverAsOf,
         },
       } : received;
-      setDetail((current) => {
+      const current = detailRef.current;
+      const next = (() => {
         if (!canDelta || !current || keyOf(current.quote) !== stockKey) return data;
         const trends = new Map(current.trends.map((row) => [row.time, row]));
         data.trends.forEach((row) => trends.set(row.time, row));
         return { ...data, trends: Array.from(trends.values()).sort((a, b) => a.time.localeCompare(b.time)), klines: data.klines.length ? data.klines : current.klines, preClose: data.preClose ?? current.preClose };
-      });
+      })();
+      detailCache.current.set(stockKey, next);
+      detailRef.current = next;
+      setDetail(next);
       if ((stock.market === 0 || stock.market === 1) && !data.trends.some((row) => row.auction)) {
         const tradingDate = data.trends.find((row) => !row.auction)?.time.slice(0, 10) || shanghaiDateKey();
         void fetchDirectOpeningAuction(stock, tradingDate).then((auctionRows) => {
@@ -1490,7 +1580,9 @@ export function StockTerminal() {
             if (!current || keyOf(current.quote) !== stockKey) return current;
             const trends = new Map(current.trends.map((row) => [row.time, row]));
             auctionRows.forEach((row) => trends.set(row.time, row));
-            return { ...current, trends: Array.from(trends.values()).sort((a, b) => a.time.localeCompare(b.time)) };
+            const nextWithAuction = { ...current, trends: Array.from(trends.values()).sort((a, b) => a.time.localeCompare(b.time)) };
+            detailCache.current.set(stockKey, nextWithAuction);
+            return nextWithAuction;
           });
         }).catch(() => undefined);
       }
@@ -1508,9 +1600,10 @@ export function StockTerminal() {
   useEffect(() => {
     detailRequest.current += 1;
     detailBusy.current = null;
-    detailRef.current = null;
-    setDetail(null);
-    refreshDetail(false);
+    const cached = detailCache.current.get(activeKey) || null;
+    detailRef.current = cached;
+    setDetail(cached);
+    refreshDetail(Boolean(cached));
   }, [activeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -1879,7 +1972,7 @@ export function StockTerminal() {
 
           <section className="chart-panel panel" title="拖动右下角可调整宽高">
             <div className="section-head"><div><span>行情走势</span><strong>{chartMode === "time" ? "盘中走势" : "日线结构"}</strong></div><div className="chart-head-actions"><button type="button" className="rail-toggle" onClick={() => setRailOpen((current) => !current)} aria-pressed={railOpen}>辅助栏</button><div className="chart-switch"><button type="button" aria-pressed={chartMode === "time"} className={chartMode === "time" ? "active" : ""} onClick={() => setChartMode("time")}>分时</button><button type="button" aria-pressed={chartMode === "day"} className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>日K</button></div></div></div>
-            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="auction-line" />集合竞价</span><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "实时价约0.7秒直连 · 均价与成交量约2秒" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
+            <div className="chart-legend"><span><i className="price-line" />最新价</span>{chartMode === "time" && <><span><i className="auction-line" />集合竞价</span><span><i className="avg-line" />均价</span><span><i className="close-line" />昨收</span><span><i className="volume-line" />成交量</span></>}<em>{chartMode === "time" ? "分时优先直连 · 看过的股票立即显示" : "日K按需加载"} · 最近点 {chartLastPoint || "—"}</em></div>
             <MarketChart key={`${activeKey}-${chartMode}`} detail={visibleChartDetail} mode={chartMode} />
           </section>
         </main>
