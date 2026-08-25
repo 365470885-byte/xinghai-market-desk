@@ -473,9 +473,11 @@ function directRankingQuote(item: Record<string, unknown>): Quote {
 }
 
 function isAtEstimatedMainBoardLimit(quote: Quote) {
-  if (quote.price === null || quote.prevClose === null || quote.prevClose <= 0 || /^N/.test(quote.name)) return false;
+  const price = quote.price;
+  const prevClose = quote.prevClose;
+  if (price === null || price === undefined || prevClose === null || prevClose === undefined || prevClose <= 0 || /^N/.test(quote.name)) return false;
   const rates = quote.name.includes("ST") ? [0.05, 0.1] : [0.1];
-  return rates.some((rate) => Math.abs(quote.price! - Math.round(quote.prevClose! * (1 + rate) * 100) / 100) < 0.005);
+  return rates.some((rate) => Math.abs(price - Math.round(prevClose * (1 + rate) * 100) / 100) < 0.005);
 }
 
 async function fetchDirectRankings(sort: RankingSort, mainBoardOnly: boolean): Promise<RankingData> {
