@@ -3,10 +3,10 @@
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WatchlistImportDialog, type ImportedStock } from "./watchlist-import";
 
-type PageKey = "watch" | "capital" | "rankings";
+type PageKey = "watch" | "capital" | "rankings" | "strong-unsealed";
 type ChartMode = "time" | "day";
 type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: number; source: string };
-type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings";
+type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings" | "strong-unsealed";
 type FeedSnapshot = MarketMeta & { label: string };
 type WatchSort = "manual" | "change" | "speed" | "amount";
 type RankingSort = "rise" | "fall" | "speed3" | "amount";
@@ -41,7 +41,8 @@ type CapitalData = {
   outflow: Array<{ code: string; name: string; amount: number | null }>;
   meta: MarketMeta;
 };
-type RankingData = { items: Quote[]; sort: RankingSort; meta: MarketMeta };
+type RankingData = { items: Quote[]; sort: RankingSort; mainBoardOnly: boolean; meta: MarketMeta };
+type StrongUnsealedData = { items: Quote[]; meta: MarketMeta };
 
 const DEFAULT_STOCKS: Stock[] = [
   { code: "CNOW", market: 101, name: "富时A50期指" },
@@ -129,7 +130,7 @@ const QUOTES_CACHE_KEY = "xinghai_quotes_cache_v1";
 const CAPITAL_CACHE_KEY = "xinghai_capital_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
-  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行",
+  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行", "strong-unsealed": "8%以上未涨停",
 };
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
@@ -447,8 +448,38 @@ async function fetchDirectCapital(): Promise<CapitalData> {
   }
 }
 
-async function fetchDirectRankings(sort: RankingSort): Promise<RankingData> {
-  const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
+const ALL_A_SHARE_UNIVERSE = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
+const MAIN_BOARD_UNIVERSE = "m:0+t:6,m:1+t:2";
+const RANKING_FIELDS = "f2,f3,f5,f6,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f100";
+
+function directRankingQuote(item: Record<string, unknown>): Quote {
+  return {
+    code: String(item.f12 ?? ""),
+    market: finiteNumber(item.f13) === 1 ? 1 : 0,
+    name: String(item.f14 ?? ""),
+    price: finiteNumber(item.f2),
+    changePercent: finiteNumber(item.f3),
+    speed: finiteNumber(item.f22),
+    high: finiteNumber(item.f15),
+    low: finiteNumber(item.f16),
+    open: finiteNumber(item.f17),
+    prevClose: finiteNumber(item.f18),
+    volume: finiteNumber(item.f5),
+    amount: finiteNumber(item.f6),
+    marketCap: finiteNumber(item.f20),
+    turnover: finiteNumber(item.f8),
+    sector: String(item.f100 || "板块待更新"),
+  };
+}
+
+function isAtEstimatedMainBoardLimit(quote: Quote) {
+  if (quote.price === null || quote.prevClose === null || quote.prevClose <= 0 || /^N/.test(quote.name)) return false;
+  const rates = quote.name.includes("ST") ? [0.05, 0.1] : [0.1];
+  return rates.some((rate) => Math.abs(quote.price! - Math.round(quote.prevClose! * (1 + rate) * 100) / 100) < 0.005);
+}
+
+async function fetchDirectRankings(sort: RankingSort, mainBoardOnly: boolean): Promise<RankingData> {
+  const universe = mainBoardOnly ? MAIN_BOARD_UNIVERSE : ALL_A_SHARE_UNIVERSE;
   const fields = "f2,f3,f5,f6,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f100";
   const config: Record<RankingSort, { field: "f3" | "f22" | "f6"; order: 0 | 1 }> = {
     rise: { field: "f3", order: 1 },
@@ -465,23 +496,7 @@ async function fetchDirectRankings(sort: RankingSort): Promise<RankingData> {
     const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
     if (!response.ok) throw new Error("排行直连暂不可用");
     const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
-    items = (payload.data?.diff || []).map((item): Quote => ({
-      code: String(item.f12 ?? ""),
-      market: finiteNumber(item.f13) === 1 ? 1 : 0,
-      name: String(item.f14 ?? ""),
-      price: finiteNumber(item.f2),
-      changePercent: finiteNumber(item.f3),
-      speed: finiteNumber(item.f22),
-      high: finiteNumber(item.f15),
-      low: finiteNumber(item.f16),
-      open: finiteNumber(item.f17),
-      prevClose: finiteNumber(item.f18),
-      volume: finiteNumber(item.f5),
-      amount: finiteNumber(item.f6),
-      marketCap: finiteNumber(item.f20),
-      turnover: finiteNumber(item.f8),
-      sector: String(item.f100 || "板块待更新"),
-    })).filter((item) => item.code && item.name && item.price !== null).slice(0, 100);
+    items = (payload.data?.diff || []).map(directRankingQuote).filter((item) => item.code && item.name && item.price !== null).slice(0, 100);
   } finally {
     window.clearTimeout(timer);
   }
@@ -489,8 +504,31 @@ async function fetchDirectRankings(sort: RankingSort): Promise<RankingData> {
   return {
     items,
     sort,
+    mainBoardOnly,
     meta: { mode: "live", updatedAt: Date.now(), source: "东方财富 · 浏览器直连" },
   };
+}
+
+async function fetchDirectStrongUnsealed(): Promise<StrongUnsealedData> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 6_000);
+  const rows: Array<Record<string, unknown>> = [];
+  try {
+    for (let page = 1; page <= 5; page += 1) {
+      const url = `https://push2delay.eastmoney.com/api/qt/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(MAIN_BOARD_UNIVERSE)}&fields=${RANKING_FIELDS}`;
+      const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+      if (!response.ok) throw new Error("强势股直连暂不可用");
+      const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
+      const pageRows = payload.data?.diff || [];
+      rows.push(...pageRows);
+      const lastChange = finiteNumber(pageRows.at(-1)?.f3);
+      if (pageRows.length < 100 || lastChange === null || lastChange < 8) break;
+    }
+  } finally {
+    window.clearTimeout(timer);
+  }
+  const items = rows.map(directRankingQuote).filter((item) => (item.changePercent ?? Number.NEGATIVE_INFINITY) >= 8 && !isAtEstimatedMainBoardLimit(item));
+  return { items, meta: { mode: "live", updatedAt: Date.now(), source: "东方财富 · 浏览器直连" } };
 }
 
 function directSpecialQuote(stock: Stock, data: Record<string, unknown>): Quote {
@@ -1696,8 +1734,8 @@ export function StockTerminal() {
         event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return;
       }
       if (isTextEntry(event.target) || event.altKey || event.metaKey || event.ctrlKey) return;
-      if (event.key === "1" || event.key === "2" || event.key === "3") {
-        setPage(event.key === "1" ? "watch" : event.key === "2" ? "capital" : "rankings"); return;
+      if (event.key === "1" || event.key === "2" || event.key === "3" || event.key === "4") {
+        setPage(event.key === "1" ? "watch" : event.key === "2" ? "capital" : event.key === "3" ? "rankings" : "strong-unsealed"); return;
       }
       if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "k") {
         if (!displayedStocks.length) return;
@@ -1742,7 +1780,7 @@ export function StockTerminal() {
           <div><strong>星辰大海</strong><small>行情研究台</small></div>
         </div>
         <nav className="main-tabs" aria-label="主要页面">
-          {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"] ] as Array<[PageKey, string]>).map(([key, label]) => (
+          {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"], ["strong-unsealed", "强势未板"] ] as Array<[PageKey, string]>).map(([key, label]) => (
             <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => setPage(key)}>{label}</button>
           ))}
         </nav>
@@ -1847,12 +1885,13 @@ export function StockTerminal() {
         <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
           <section className="panel pulse-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>市场快照</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => selectStock(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
           <section className="panel reliability-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>数据状态</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "优" : connection === "stale" ? "缓" : connection === "offline" ? "断" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
-          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1/2/3 切换页面 · 空格键暂停</kbd></section>
+          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1/2/3/4 切换页面 · 空格键暂停</kbd></section>
         </aside>
       </div>}
 
       {page === "capital" && <CapitalPage updateConnection={updateConnection} />}
       {page === "rankings" && <RankingsPage onPick={addStock} updateConnection={updateConnection} />}
+      {page === "strong-unsealed" && <StrongUnsealedPage onPick={addStock} updateConnection={updateConnection} />}
 
       {menu && <div className="context-menu" role="menu" aria-label="自选股操作" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }}>
         <button type="button" role="menuitem" onClick={() => togglePin(menu.key)}><span aria-hidden="true">◆</span>{pinned.has(menu.key) ? "取消固定" : "固定置顶"}</button>
@@ -1964,12 +2003,14 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
 
 function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
   const [sort, setSort] = useState<RankingSort>("rise");
-  const [dataBySort, setDataBySort] = useState<Partial<Record<RankingSort, RankingData>>>({});
+  const [mainBoardOnly, setMainBoardOnly] = useState(false);
+  const [dataBySort, setDataBySort] = useState<Record<string, RankingData>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const dataRef = useRef<Partial<Record<RankingSort, RankingData>>>({});
+  const dataRef = useRef<Record<string, RankingData>>({});
   const requestRef = useRef(0);
-  const data = dataBySort[sort] || null;
+  const cacheKey = `${sort}:${mainBoardOnly ? "main" : "all"}`;
+  const data = dataBySort[cacheKey] || null;
   const options: Array<{ key: RankingSort; label: string; title: string; description: string }> = [
     { key: "rise", label: "按涨幅", title: "涨幅排序", description: "涨幅最高" },
     { key: "fall", label: "按跌幅", title: "跌幅排序", description: "跌幅最大" },
@@ -1983,24 +2024,24 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
     try {
       let next: RankingData;
       try {
-        next = await fetchDirectRankings(sort);
+        next = await fetchDirectRankings(sort, mainBoardOnly);
       } catch {
-        next = await fetchJson<RankingData>(`/api/market?action=rankings&sort=${sort}`, 12_000, 0);
+        next = await fetchJson<RankingData>(`/api/market?action=rankings&sort=${sort}&board=${mainBoardOnly ? "main" : "all"}`, 12_000, 0);
       }
-      dataRef.current[sort] = next;
-      setDataBySort((previous) => ({ ...previous, [sort]: next }));
+      dataRef.current[cacheKey] = next;
+      setDataBySort((previous) => ({ ...previous, [cacheKey]: next }));
       if (requestId !== requestRef.current) return;
       setError("");
       updateConnection(next.meta, "rankings");
     } catch (err) {
       if (requestId !== requestRef.current) return;
-      const previous = dataRef.current[sort];
+      const previous = dataRef.current[cacheKey];
       setError(err instanceof Error ? err.message : "涨跌排行加载失败");
       updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "涨跌排行暂不可用" }, "rankings");
     } finally {
       if (requestId === requestRef.current) setLoading(false);
     }
-  }, [sort, updateConnection]);
+  }, [cacheKey, mainBoardOnly, sort, updateConnection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2036,15 +2077,81 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
 
   return <main className="rankings-page" id="main-content">
     <header className="rankings-header panel">
-      <div className="rankings-intro"><span>沪深A股实时排序</span><h1>股票排行</h1><p>每次显示当前排序的全市场前100，点击股票可进入个股详情。</p></div>
+      <div className="rankings-intro"><span>沪深A股实时排序</span><h1>股票排行</h1><p>{mainBoardOnly ? "当前仅显示沪深主板前100" : "每次显示当前排序的全市场前100"}，点击股票可进入个股详情。</p></div>
       <div className="rankings-tools">
-        <div className="ranking-sort" role="group" aria-label="排行排列方式"><span>排列</span>{options.map((option) => <button type="button" key={option.key} aria-pressed={sort === option.key} className={sort === option.key ? "active" : ""} onClick={() => setSort(option.key)}>{option.label}</button>)}</div>
+        <div className="ranking-control-row"><div className="ranking-sort" role="group" aria-label="排行排列方式"><span>排列</span>{options.map((option) => <button type="button" key={option.key} aria-pressed={sort === option.key} className={sort === option.key ? "active" : ""} onClick={() => setSort(option.key)}>{option.label}</button>)}</div><button type="button" className={`ranking-filter ${mainBoardOnly ? "active" : ""}`} aria-pressed={mainBoardOnly} onClick={() => setMainBoardOnly((current) => !current)}><i aria-hidden="true">✓</i>仅看主板</button></div>
         <div className="rankings-status"><DataStamp meta={data?.meta} label={currentOption.title} compact /><button type="button" onClick={load} disabled={loading}>{loading ? "同步中…" : "立即刷新"}</button></div>
       </div>
     </header>
     {error && <div className="ranking-warning" role="status"><strong>{data ? "榜单刷新暂时中断" : "榜单连接失败"}</strong><span>{error}{data ? "，当前保留最近一次有效结果。" : ""}</span></div>}
     <div className="rankings-grid">
       {board(data?.items || [])}
+    </div>
+  </main>;
+}
+
+function StrongUnsealedPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
+  const [data, setData] = useState<StrongUnsealedData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const dataRef = useRef<StrongUnsealedData | null>(null);
+  const requestRef = useRef(0);
+  const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    setLoading(true);
+    try {
+      let next: StrongUnsealedData;
+      try {
+        next = await fetchDirectStrongUnsealed();
+      } catch {
+        next = await fetchJson<StrongUnsealedData>("/api/market?action=strong-unsealed", 12_000, 0);
+      }
+      if (requestId !== requestRef.current) return;
+      dataRef.current = next;
+      setData(next);
+      setError("");
+      updateConnection(next.meta, "strong-unsealed");
+    } catch (err) {
+      if (requestId !== requestRef.current) return;
+      const previous = dataRef.current;
+      setError(err instanceof Error ? err.message : "强势未板股票加载失败");
+      updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "强势未板行情暂不可用" }, "strong-unsealed");
+    } finally {
+      if (requestId === requestRef.current) setLoading(false);
+    }
+  }, [updateConnection]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    const tick = async () => {
+      await load();
+      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 5_000 : 15_000);
+    };
+    tick();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [load]);
+
+  const items = data?.items || [];
+  return <main className="rankings-page strong-unsealed-page" id="main-content">
+    <header className="rankings-header strong-unsealed-header panel">
+      <div className="rankings-intro"><span>沪深主板盘中筛选</span><h1>8%以上未涨停</h1><p>当前涨幅不低于8%，且最新价尚未封住涨停价；点击股票可进入个股详情。</p></div>
+      <div className="strong-unsealed-tools"><div className="strong-conditions" aria-label="筛选条件"><span>沪深主板</span><span>涨幅 ≥ 8%</span><span>当前未涨停</span></div><div className="rankings-status"><DataStamp meta={data?.meta} label="强势未板" compact /><button type="button" onClick={load} disabled={loading}>{loading ? "同步中…" : "立即刷新"}</button></div></div>
+    </header>
+    {error && <div className="ranking-warning" role="status"><strong>{data ? "强势股刷新暂时中断" : "强势股连接失败"}</strong><span>{error}{data ? "，当前保留最近一次有效结果。" : ""}</span></div>}
+    <div className="rankings-grid">
+      <section className="ranking-board strong-unsealed-board panel">
+        <div className="ranking-board-head"><div><span>实时条件匹配</span><strong>符合条件的主板股票</strong></div><em>{items.length} 只</em></div>
+        <div className="strong-columns" aria-hidden="true"><span>排名</span><span>股票 / 所属板块</span><span>最新价</span><span>涨跌幅</span><span>3分钟涨速</span><span>成交额</span><span>换手率</span><span>总市值</span></div>
+        <div className="strong-list" aria-label="涨幅8%以上且未涨停的主板股票">
+          {loading && !items.length ? <LoadingRows count={12} /> : items.map((stock, index) => <button type="button" className="strong-row" key={keyOf(stock)} onClick={() => onPick(stock)} title={`查看 ${stock.name} 详情`}>
+            <span>{String(index + 1).padStart(3, "0")}</span>
+            <span className="ranking-stock"><span className="ranking-name-line"><strong>{stock.name}</strong><em title={stock.sector || "板块待更新"}>{stock.sector || "板块待更新"}</em></span><small>{stock.code}</small></span>
+            <span>{number(stock.price)}</span><span className={tone(stock.changePercent)}>{signed(stock.changePercent)}</span><span className={tone(stock.speed)}>{signed(stock.speed)}</span><span>{amount(stock.amount)}</span><span>{signed(stock.turnover)}</span><span>{marketAmount(stock.marketCap)}</span>
+          </button>)}
+          {!loading && !items.length && <EmptyState title="当前没有符合条件的股票" detail="沪深主板暂时没有涨幅达到8%且仍未涨停的股票" />}
+        </div>
+      </section>
     </div>
   </main>;
 }

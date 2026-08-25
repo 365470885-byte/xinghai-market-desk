@@ -37,6 +37,8 @@ test("server-renders the market research desk", async () => {
   assert.match(html, />多选<\/button>/);
   assert.doesNotMatch(html, />板块雷达<\/button>/);
   assert.match(html, />资金流向<\/button>/);
+  assert.match(html, />涨跌排行<\/button>/);
+  assert.match(html, />强势未板<\/button>/);
   assert.match(html, /class="skip-link" href="#main-content"/);
   assert.match(html, /role="search"/);
   assert.match(html, /role="status" aria-live="polite"/);
@@ -84,6 +86,9 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /"全选"/);
   assert.match(terminal, /bulkRemoveStocks/);
   assert.match(terminal, /CAPITAL_CACHE_KEY/);
+  assert.match(terminal, /仅看主板/);
+  assert.match(terminal, /8%以上未涨停/);
+  assert.match(terminal, /fetchDirectStrongUnsealed/);
   assert.match(terminal, /fetchDirectCapital/);
   assert.match(terminal, /push2delay\.eastmoney\.com\/api\/qt/);
   assert.match(terminal, /东方财富直连/);
@@ -119,6 +124,8 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(marketRoute, /loadEastmoneyQuotes\(missingAShares\)/);
   assert.match(marketRoute, /loadActualTurnover/);
   assert.match(marketRoute, /action === "actual-turnover"/);
+  assert.match(marketRoute, /action === "strong-unsealed"/);
+  assert.match(marketRoute, /MAIN_BOARD_UNIVERSE/);
   assert.match(marketRoute, /RPT_F10_EH_FREEHOLDERS/);
   assert.match(marketRoute, /clock < "09:15:00" \|\| clock > "09:25:00"/);
   assert.match(specialRoute, /preferredRegion = "iad1"/);

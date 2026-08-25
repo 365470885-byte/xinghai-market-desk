@@ -1364,8 +1364,21 @@ async function capital() {
 }
 
 type RankingSort = "rise" | "fall" | "speed3" | "amount";
+const ALL_A_SHARE_UNIVERSE = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
+const MAIN_BOARD_UNIVERSE = "m:0+t:6,m:1+t:2";
+const RANKING_FIELDS = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f100";
 
-async function rankings(requestedSort: string) {
+function isMainBoardStock(stock: { code: string; market: number }) {
+  return stock.market === 1 ? /^(600|601|603|605)/.test(stock.code) : /^(000|001|002|003)/.test(stock.code);
+}
+
+function isAtEstimatedMainBoardLimit(quote: ReturnType<typeof parseQuote>) {
+  if (quote.price === null || quote.prevClose === null || quote.prevClose <= 0 || /^N/.test(quote.name)) return false;
+  const rates = quote.name.includes("ST") ? [0.05, 0.1] : [0.1];
+  return rates.some((rate) => Math.abs(quote.price! - Math.round(quote.prevClose! * (1 + rate) * 100) / 100) < 0.005);
+}
+
+async function rankings(requestedSort: string, mainBoardOnly: boolean) {
   const sort: RankingSort = ["rise", "fall", "speed3", "amount"].includes(requestedSort) ? requestedSort as RankingSort : "rise";
   const loadSina = async (ascending: boolean) => {
     const pages = await Promise.all([1, 2].map((page) => resilientText(
@@ -1405,13 +1418,13 @@ async function rankings(requestedSort: string) {
           f62: null,
         });
       })
-      .filter((item) => item.code && item.name && item.price !== null)
+      .filter((item) => item.code && item.name && item.price !== null && (!mainBoardOnly || isMainBoardStock(item)))
       .slice(0, 100);
     return { items, results: pages };
   };
 
-  const universe = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
-  const fields = "f2,f3,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f20,f22,f100";
+  const universe = mainBoardOnly ? MAIN_BOARD_UNIVERSE : ALL_A_SHARE_UNIVERSE;
+  const fields = RANKING_FIELDS;
   const config: Record<RankingSort, { field: "f3" | "f22" | "f6"; order: 0 | 1 }> = {
     rise: { field: "f3", order: 1 },
     fall: { field: "f3", order: 0 },
@@ -1433,6 +1446,7 @@ async function rankings(requestedSort: string) {
   if (eastmoneyResult && eastmoneyItems.length === 100) return {
     items: eastmoneyItems,
     sort,
+    mainBoardOnly,
     meta: { ...metaFrom(eastmoneyResult), source: "东方财富 · 沪深A股" },
   };
 
@@ -1441,10 +1455,32 @@ async function rankings(requestedSort: string) {
     if (sina.items.length === 100) return {
       items: sina.items,
       sort,
+      mainBoardOnly,
       meta: { ...metaFrom(...sina.results), source: "新浪财经 · 沪深A股" },
     };
   }
   throw new Error("股票排行暂时无法连接");
+}
+
+async function strongUnsealed() {
+  const results: Array<Awaited<ReturnType<typeof resilientJson>>> = [];
+  const rows: Array<Record<string, unknown>> = [];
+  for (let page = 1; page <= 5; page += 1) {
+    const result = await resilientJson(
+      `${EASTMONEY}/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(MAIN_BOARD_UNIVERSE)}&fields=${RANKING_FIELDS}`,
+      3_000,
+      { attempts: 1, timeoutMs: 3_500 },
+    );
+    results.push(result);
+    const pageRows = result.value?.data?.diff ?? [];
+    rows.push(...pageRows);
+    const lastChange = numeric(pageRows.at(-1)?.f3);
+    if (pageRows.length < 100 || lastChange === null || lastChange < 8) break;
+  }
+  const items = rows
+    .map((item) => ({ ...parseQuote(item), sector: String(item.f100 || "板块待更新") }))
+    .filter((item) => item.code && item.name && item.price !== null && (item.changePercent ?? Number.NEGATIVE_INFINITY) >= 8 && isMainBoardStock(item) && !isAtEstimatedMainBoardLimit(item));
+  return { items, meta: { ...metaFrom(...results), source: "东方财富 · 沪深主板" } };
 }
 
 async function search(keyword: string) {
@@ -1481,7 +1517,8 @@ export async function GET(request: Request) {
     if (action === "sectors") return json(await sectors(url.searchParams.get("type") ?? "concept"));
     if (action === "sector-stocks") return json(await sectorStocks(url.searchParams.get("code") ?? ""));
     if (action === "capital") return json(await capital());
-    if (action === "rankings") return json(await rankings(url.searchParams.get("sort") ?? "rise"));
+    if (action === "rankings") return json(await rankings(url.searchParams.get("sort") ?? "rise", url.searchParams.get("board") === "main"));
+    if (action === "strong-unsealed") return json(await strongUnsealed());
     if (action === "search") return json(await search(url.searchParams.get("q") ?? ""));
     return json({ error: "未知数据请求" }, 400);
   } catch (error) {
