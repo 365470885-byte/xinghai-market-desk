@@ -66,6 +66,11 @@ test("keeps the visual and accessibility safeguards in source", async () => {
   assert.match(terminal, /role="img"/);
   assert.match(terminal, /涨停" : "跌停"}封单/);
   assert.match(terminal, /data-stock-key={key}/);
+  assert.match(terminal, /data-watch-row-key={key}/);
+  assert.match(terminal, /watch-drag-handle/);
+  assert.match(terminal, /setPointerCapture/);
+  assert.match(terminal, /elementFromPoint/);
+  assert.match(terminal, /自选股顺序已保存/);
   assert.match(terminal, /keyOf\(detail\.quote\) === activeKey/);
   assert.match(terminal, /分时优先直连 · 看过的股票立即显示/);
   assert.match(terminal, /mergeStreamingPrice/);

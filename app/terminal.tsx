@@ -1175,6 +1175,7 @@ export function StockTerminal() {
   const [selectedWatchKeys, setSelectedWatchKeys] = useState<Set<string>>(new Set());
   const [screenshotImportOpen, setScreenshotImportOpen] = useState(false);
   const [watchSort, setWatchSort] = useState<WatchSort>("manual");
+  const [draggingWatchKey, setDraggingWatchKey] = useState("");
   const [railOpen, setRailOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
@@ -1183,7 +1184,7 @@ export function StockTerminal() {
   const [searching, setSearching] = useState(false);
   const [searchMessage, setSearchMessage] = useState("");
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
-  const dragged = useRef<string | null>(null);
+  const pointerDrag = useRef<{ pointerId: number; sourceKey: string; targetKey: string } | null>(null);
   const quoteRequest = useRef<Record<"all" | "priority" | "overseas", number>>({ all: 0, priority: 0, overseas: 0 });
   const detailRequest = useRef(0);
   const quoteBusy = useRef<Record<"all" | "priority" | "overseas", boolean>>({ all: false, priority: false, overseas: false });
@@ -1810,17 +1811,72 @@ export function StockTerminal() {
     setNotice(`已删除 ${selectedWatchCount} 只股票`);
   };
 
-  const dropOn = (targetKey: string) => {
-    const sourceKey = dragged.current;
-    if (!sourceKey || sourceKey === targetKey) return;
+  const reorderWatchStock = (sourceKey: string, requestedTargetKey: string) => {
+    if (!sourceKey || sourceKey === requestedTargetKey) return;
     updateWatchlist((current) => {
       const next = [...current];
       const from = next.findIndex((stock) => keyOf(stock) === sourceKey);
+      const sourceIsPinned = pinned.has(sourceKey);
+      const targetIsPinned = pinned.has(requestedTargetKey);
+      const peerKeys = next.filter((stock) => pinned.has(keyOf(stock)) === sourceIsPinned).map(keyOf);
+      const targetKey = sourceIsPinned === targetIsPinned
+        ? requestedTargetKey
+        : sourceIsPinned ? peerKeys.at(-1) || sourceKey : peerKeys[0] || sourceKey;
       const to = next.findIndex((stock) => keyOf(stock) === targetKey);
       if (from < 0 || to < 0) return current;
       const [item] = next.splice(from, 1); next.splice(to, 0, item); return next;
     });
-    dragged.current = null;
+  };
+
+  const enterManualWatchOrder = () => {
+    if (watchSort === "manual") return;
+    updateWatchlist(displayedStocks);
+    setWatchSort("manual");
+  };
+
+  const beginWatchDrag = (event: ReactPointerEvent<HTMLButtonElement>, sourceKey: string) => {
+    if (watchSelectionMode || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    enterManualWatchOrder();
+    pointerDrag.current = { pointerId: event.pointerId, sourceKey, targetKey: sourceKey };
+    setDraggingWatchKey(sourceKey);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveWatchDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const session = pointerDrag.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const list = event.currentTarget.closest<HTMLElement>(".watch-list");
+    if (list) {
+      const bounds = list.getBoundingClientRect();
+      if (event.clientY < bounds.top + 42) list.scrollBy({ top: -18, behavior: "auto" });
+      else if (event.clientY > bounds.bottom - 42) list.scrollBy({ top: 18, behavior: "auto" });
+    }
+    const row = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-watch-row-key]");
+    const targetKey = row?.dataset.watchRowKey || "";
+    if (!targetKey || targetKey === session.targetKey) return;
+    session.targetKey = targetKey;
+    reorderWatchStock(session.sourceKey, targetKey);
+  };
+
+  const endWatchDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const session = pointerDrag.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    pointerDrag.current = null;
+    setDraggingWatchKey("");
+    if (session.targetKey !== session.sourceKey) setNotice("自选股顺序已保存");
+  };
+
+  const moveWatchStockByKeyboard = (sourceKey: string, direction: -1 | 1) => {
+    enterManualWatchOrder();
+    const currentIndex = displayedStocks.findIndex((stock) => keyOf(stock) === sourceKey);
+    const target = displayedStocks[currentIndex + direction];
+    if (!target) return;
+    reorderWatchStock(sourceKey, keyOf(target));
+    setNotice("自选股顺序已保存");
   };
 
   useEffect(() => {
@@ -1939,8 +1995,9 @@ export function StockTerminal() {
           <div className="watch-list">
             {displayedStocks.map((stock) => {
               const key = keyOf(stock); const quote = quotes[key]; const selected = selectedWatchKeys.has(key);
-              return <div key={key} draggable={!watchSelectionMode && watchSort === "manual"} onDragStart={() => { if (!watchSelectionMode && watchSort === "manual") dragged.current = key; }} onDragOver={(event) => { if (!watchSelectionMode && watchSort === "manual") event.preventDefault(); }} onDrop={() => { if (!watchSelectionMode && watchSort === "manual") dropOn(key); }}
-                className={`watch-row ${activeKey === key ? "active" : ""} ${selected ? "selected" : ""}`} onContextMenu={(event) => { event.preventDefault(); if (!watchSelectionMode) setMenu({ key, x: event.clientX, y: event.clientY }); }}>
+              return <div key={key} data-watch-row-key={key}
+                className={`watch-row ${activeKey === key ? "active" : ""} ${selected ? "selected" : ""} ${draggingWatchKey === key ? "dragging" : ""}`} onContextMenu={(event) => { event.preventDefault(); if (!watchSelectionMode) setMenu({ key, x: event.clientX, y: event.clientY }); }}>
+                {!watchSelectionMode && <button type="button" className="watch-drag-handle" aria-label={`拖动排序 ${quote?.name || stock.name}，也可用上下方向键移动`} title="按住拖动排序" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }} onPointerDown={(event) => beginWatchDrag(event, key)} onPointerMove={moveWatchDrag} onPointerUp={endWatchDrag} onPointerCancel={endWatchDrag} onKeyDown={(event) => { if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return; event.preventDefault(); event.stopPropagation(); moveWatchStockByKeyboard(key, event.key === "ArrowUp" ? -1 : 1); }}><span aria-hidden="true">⋮⋮</span></button>}
                 <button type="button" className={`watch-select ${watchSelectionMode ? "selecting" : ""}`} data-stock-key={key} aria-pressed={watchSelectionMode ? selected : activeKey === key} aria-label={watchSelectionMode ? `${selected ? "取消选择" : "选择"} ${quote?.name || stock.name}` : undefined} onClick={() => watchSelectionMode ? toggleWatchSelection(key) : selectStock(key)}>
                   {watchSelectionMode && <span className="watch-checkbox" aria-hidden="true">{selected ? "✓" : ""}</span>}
                   <span className="stock-identity"><span><span>{pinned.has(key) ? "◆" : "◇"}</span><strong>{quote?.name || stock.name}</strong></span><small><span>{stock.code}</span>{quote?.limitState && quote.sealedAmount ? <b className={`limit-badge ${quote.limitState}`}>{quote.limitState === "up" ? "涨停" : "跌停"}封单 {amount(quote.sealedAmount)}</b> : null}</small></span>
@@ -1952,7 +2009,7 @@ export function StockTerminal() {
             })}
             {!watchlist.length && <EmptyState title="自选列表为空" detail="在顶部搜索并添加股票" />}
           </div>
-          <div className="sidebar-hint"><span>{watchSelectionMode ? "点击股票勾选 · 支持全选与批量处理" : watchSort === "manual" ? "拖动排序 · 右键管理" : "临时排序 · 手动顺序已保留"}</span><span>右下角可缩放</span></div>
+          <div className="sidebar-hint"><span>{watchSelectionMode ? "点击股票勾选 · 支持全选与批量处理" : "拖动每只股票左侧把手排序 · 右键管理"}</span><span>右下角可缩放</span></div>
         </aside>
 
         <main className="research-main">
