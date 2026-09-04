@@ -1383,27 +1383,52 @@ async function fetchSectorBoard(url: string) {
 }
 
 async function sectorRanking() {
-  const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f22,f62`;
-  const result = await fetchSectorBoard(boardUrl);
-  const boards: SectorRankCard[] = (result.value?.data?.diff ?? [])
-    .map((item: Record<string, unknown>) => ({
-      code: String(item.f12 ?? ""),
-      name: String(item.f14 ?? ""),
-      change: numeric(item.f3),
-      inflow: numeric(item.f62),
-      upCount: numeric(item.f104),
-      downCount: numeric(item.f105),
-      stocks: [] as SectorRankStock[],
-    }))
-    .filter((board: SectorRankCard) => board.code && board.name && board.change !== null
-      && !/[ⅠⅡⅢ]$/.test(board.name)
-      && (board.upCount === null || board.downCount === null || board.upCount + board.downCount >= SECTOR_RANK_MIN_MEMBERS))
-    .sort((a: SectorRankCard, b: SectorRankCard) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+  // 东财 clist 从 Vercel 出口偶发被限流，失败时整链路切换同花顺行业数据。
+  let boards: SectorRankCard[] = [];
+  let boardMeta: { fetchedAt: number; mode: CacheMode } | null = null;
+  let source = "行业板块涨跌 · 东方财富行情";
+  try {
+    const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f22,f62`;
+    const result = await fetchSectorBoard(boardUrl);
+    boards = (result.value?.data?.diff ?? [])
+      .map((item: Record<string, unknown>) => ({
+        code: String(item.f12 ?? ""),
+        name: String(item.f14 ?? ""),
+        change: numeric(item.f3),
+        inflow: numeric(item.f62),
+        upCount: numeric(item.f104),
+        downCount: numeric(item.f105),
+        stocks: [] as SectorRankStock[],
+      }))
+      .filter((board: SectorRankCard) => board.code && board.name && board.change !== null
+        && !/[ⅠⅡⅢ]$/.test(board.name)
+        && (board.upCount === null || board.downCount === null || board.upCount + board.downCount >= SECTOR_RANK_MIN_MEMBERS))
+      .sort((a: SectorRankCard, b: SectorRankCard) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+    if (boards.length) boardMeta = { fetchedAt: result.fetchedAt, mode: result.mode };
+  } catch { /* 东财不可用时走同花顺。 */ }
+  if (!boards.length) {
+    const ths = await thsIndustrySectors();
+    boards = ths.items
+      .filter((item) => item.change !== null && !/[ⅠⅡⅢ]$/.test(item.name))
+      .map((item) => ({ code: item.code, name: item.name, change: item.change, inflow: item.inflow, upCount: null, downCount: null, stocks: [] as SectorRankStock[] }))
+      .sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+    source = "行业板块涨跌 · 同花顺行情";
+    boardMeta = { fetchedAt: ths.result.fetchedAt, mode: ths.result.mode };
+  }
   if (!boards.length) throw new Error("板块行情暂时无法连接");
   const risers = boards.filter((board) => (board.change ?? 0) > 0).slice(0, 5);
   const fallers = boards.filter((board) => (board.change ?? 0) < 0).slice(-5).reverse();
   await Promise.all([...risers, ...fallers].map(async (board) => {
     try {
+      if (board.code.startsWith("THS")) {
+        const detail = await thsIndustryStocks(board.code);
+        board.stocks = detail.items
+          .filter((row) => row.change !== null)
+          .sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY))
+          .slice(0, 3)
+          .map((row) => ({ code: row.code, name: row.name, change: row.change }));
+        return;
+      }
       const url = `${EASTMONEY}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;
       const detail = await fetchSectorBoard(url);
       board.stocks = (detail.value?.data?.diff ?? [])
@@ -1417,7 +1442,7 @@ async function sectorRanking() {
   return {
     risers,
     fallers,
-    meta: { ...metaFrom(result), source: "行业板块涨跌 · 东方财富行情" },
+    meta: { ...(boardMeta ? metaFrom(boardMeta) : {}), source },
   };
 }
 
