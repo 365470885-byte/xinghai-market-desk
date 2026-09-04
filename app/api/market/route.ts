@@ -1373,17 +1373,17 @@ type SectorRankCard = {
 // 行业板块（东财 m:90+t:2）成分普遍在 15 只以上；成员过少的板块不具备市场代表性。
 const SECTOR_RANK_MIN_MEMBERS = 12;
 
-// 板块榜单请求：先走 push2delay，失败快速回退 push2，避免单域名慢响应拖爆函数时长。
+// 板块榜单请求：复刻 sectors() 已验证可用的请求形态；push2 失败后快速回退 push2delay。
 async function fetchSectorBoard(url: string) {
   try {
-    return await resilientJson(url.replace(EASTMONEY, EASTMONEY_DELAY), 16_000, { attempts: 1, timeoutMs: 2_500 });
-  } catch {
     return await resilientJson(url, 16_000, { attempts: 1, timeoutMs: 2_500 });
+  } catch {
+    return await resilientJson(url.replace(EASTMONEY, EASTMONEY_DELAY), 16_000, { attempts: 1, timeoutMs: 2_500 });
   }
 }
 
 async function sectorRanking() {
-  const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f62,f104,f105`;
+  const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f22,f62`;
   const result = await fetchSectorBoard(boardUrl);
   const boards: SectorRankCard[] = (result.value?.data?.diff ?? [])
     .map((item: Record<string, unknown>) => ({
