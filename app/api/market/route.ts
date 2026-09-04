@@ -1373,9 +1373,18 @@ type SectorRankCard = {
 // 行业板块（东财 m:90+t:2）成分普遍在 15 只以上；成员过少的板块不具备市场代表性。
 const SECTOR_RANK_MIN_MEMBERS = 12;
 
+// 板块榜单请求：先走 push2delay，失败快速回退 push2，避免单域名慢响应拖爆函数时长。
+async function fetchSectorBoard(url: string) {
+  try {
+    return await resilientJson(url.replace(EASTMONEY, EASTMONEY_DELAY), 16_000, { attempts: 1, timeoutMs: 2_500 });
+  } catch {
+    return await resilientJson(url, 16_000, { attempts: 1, timeoutMs: 2_500 });
+  }
+}
+
 async function sectorRanking() {
   const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f62,f104,f105`;
-  const result = await resilientJson(boardUrl, 16_000);
+  const result = await fetchSectorBoard(boardUrl);
   const boards: SectorRankCard[] = (result.value?.data?.diff ?? [])
     .map((item: Record<string, unknown>) => ({
       code: String(item.f12 ?? ""),
@@ -1396,7 +1405,7 @@ async function sectorRanking() {
   await Promise.all([...risers, ...fallers].map(async (board) => {
     try {
       const url = `${EASTMONEY}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;
-      const detail = await resilientJson(url, 16_000, { attempts: 1, timeoutMs: 2_500 });
+      const detail = await fetchSectorBoard(url);
       board.stocks = (detail.value?.data?.diff ?? [])
         .map((item: Record<string, unknown>) => ({
           code: String(item.f12 ?? ""), name: String(item.f14 ?? ""), change: numeric(item.f3),
