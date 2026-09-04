@@ -1388,7 +1388,7 @@ async function sectorRanking() {
   let boardMeta: { fetchedAt: number; mode: CacheMode } | null = null;
   let source = "行业板块涨跌 · 东方财富行情";
   try {
-    const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f22,f62`;
+    const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f62,f104,f105`;
     const result = await fetchSectorBoard(boardUrl);
     boards = (result.value?.data?.diff ?? [])
       .map((item: Record<string, unknown>) => ({
