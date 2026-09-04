@@ -1363,6 +1363,55 @@ async function capital() {
   };
 }
 
+type SectorRankStock = { code: string; name: string; change: number | null };
+type SectorRankCard = {
+  code: string; name: string; change: number | null;
+  inflow: number | null; upCount: number | null; downCount: number | null;
+  stocks: SectorRankStock[];
+};
+
+// 行业板块（东财 m:90+t:2）成分普遍在 15 只以上；成员过少的板块不具备市场代表性。
+const SECTOR_RANK_MIN_MEMBERS = 12;
+
+async function sectorRanking() {
+  const boardUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f62,f104,f105`;
+  const result = await resilientJson(boardUrl, 16_000);
+  const boards: SectorRankCard[] = (result.value?.data?.diff ?? [])
+    .map((item: Record<string, unknown>) => ({
+      code: String(item.f12 ?? ""),
+      name: String(item.f14 ?? ""),
+      change: numeric(item.f3),
+      inflow: numeric(item.f62),
+      upCount: numeric(item.f104),
+      downCount: numeric(item.f105),
+      stocks: [] as SectorRankStock[],
+    }))
+    .filter((board: SectorRankCard) => board.code && board.name && board.change !== null
+      && !/[ⅠⅡⅢ]$/.test(board.name)
+      && (board.upCount === null || board.downCount === null || board.upCount + board.downCount >= SECTOR_RANK_MIN_MEMBERS))
+    .sort((a: SectorRankCard, b: SectorRankCard) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+  if (!boards.length) throw new Error("板块行情暂时无法连接");
+  const risers = boards.slice(0, 5);
+  const fallers = boards.slice(Math.max(5, boards.length - 5)).reverse();
+  await Promise.all([...risers, ...fallers].map(async (board) => {
+    try {
+      const url = `${EASTMONEY}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;
+      const detail = await resilientJson(url, 16_000, { attempts: 1, timeoutMs: 2_500 });
+      board.stocks = (detail.value?.data?.diff ?? [])
+        .map((item: Record<string, unknown>) => ({
+          code: String(item.f12 ?? ""), name: String(item.f14 ?? ""), change: numeric(item.f3),
+        }))
+        .filter((row: SectorRankStock) => row.code && row.name && row.change !== null)
+        .slice(0, 3);
+    } catch { /* 板块缺少成分明细时保留主榜单。 */ }
+  }));
+  return {
+    risers,
+    fallers,
+    meta: { ...metaFrom(result), source: "行业板块涨跌 · 东方财富行情" },
+  };
+}
+
 type RankingSort = "rise" | "fall" | "speed3" | "amount";
 const ALL_A_SHARE_UNIVERSE = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
 const MAIN_BOARD_UNIVERSE = "m:0+t:6,m:1+t:2";
@@ -1518,6 +1567,7 @@ export async function GET(request: Request) {
     if (action === "sectors") return json(await sectors(url.searchParams.get("type") ?? "concept"));
     if (action === "sector-stocks") return json(await sectorStocks(url.searchParams.get("code") ?? ""));
     if (action === "capital") return json(await capital());
+    if (action === "sector-ranking") return json(await sectorRanking());
     if (action === "rankings") return json(await rankings(url.searchParams.get("sort") ?? "rise", url.searchParams.get("board") === "main"));
     if (action === "strong-unsealed") return json(await strongUnsealed());
     if (action === "search") return json(await search(url.searchParams.get("q") ?? ""));

@@ -6,7 +6,7 @@ import { WatchlistImportDialog, type ImportedStock } from "./watchlist-import";
 type PageKey = "watch" | "capital" | "rankings" | "strong-unsealed";
 type ChartMode = "time" | "day";
 type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: number; source: string };
-type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings" | "strong-unsealed";
+type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings" | "strong-unsealed" | "sector-rank";
 type FeedSnapshot = MarketMeta & { label: string };
 type WatchSort = "manual" | "change" | "speed" | "amount";
 type RankingSort = "rise" | "fall" | "speed3" | "amount";
@@ -43,6 +43,13 @@ type CapitalData = {
 };
 type RankingData = { items: Quote[]; sort: RankingSort; mainBoardOnly: boolean; meta: MarketMeta };
 type StrongUnsealedData = { items: Quote[]; meta: MarketMeta };
+type SectorRankStock = { code: string; name: string; change: number | null };
+type SectorRankCard = {
+  code: string; name: string; change: number | null;
+  inflow: number | null; upCount: number | null; downCount: number | null;
+  stocks: SectorRankStock[];
+};
+type SectorRankingData = { risers: SectorRankCard[]; fallers: SectorRankCard[]; meta: MarketMeta };
 
 const DEFAULT_STOCKS: Stock[] = [
   { code: "CNOW", market: 101, name: "富时A50期指" },
@@ -130,7 +137,7 @@ const QUOTES_CACHE_KEY = "xinghai_quotes_cache_v1";
 const CAPITAL_CACHE_KEY = "xinghai_capital_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
-  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行", "strong-unsealed": "8%以上未涨停",
+  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行", "strong-unsealed": "8%以上未涨停", "sector-rank": "板块涨跌排行",
 };
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
@@ -516,6 +523,53 @@ async function fetchDirectCapital(): Promise<CapitalData> {
       outflow: cleanSectors(outflowPayload.data?.diff),
       meta: { mode: "live", updatedAt: Date.now(), source: "东方财富直连" },
     };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+const SECTOR_RANK_MIN_MEMBERS = 12;
+
+function parseSectorRankBoards(rows: Array<Record<string, unknown>> = []): SectorRankCard[] {
+  return rows.map((item) => ({
+    code: String(item.f12 ?? ""),
+    name: String(item.f14 ?? ""),
+    change: finiteNumber(item.f3),
+    inflow: finiteNumber(item.f62),
+    upCount: finiteNumber(item.f104),
+    downCount: finiteNumber(item.f105),
+    stocks: [] as SectorRankStock[],
+  })).filter((board) => board.code && board.name && board.change !== null
+    && !/[ⅠⅡⅢ]$/.test(board.name)
+    && (board.upCount === null || board.downCount === null || board.upCount + board.downCount >= SECTOR_RANK_MIN_MEMBERS))
+    .sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+}
+
+async function fetchDirectSectorRanking(): Promise<SectorRankingData> {
+  const base = "https://push2delay.eastmoney.com/api/qt";
+  const boardUrl = `${base}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m%3A90%2Bt%3A2&fields=f12,f14,f3,f62,f104,f105`;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 4_500);
+  try {
+    const response = await fetch(boardUrl, { signal: controller.signal, cache: "no-store", mode: "cors" });
+    if (!response.ok) throw new Error("板块行情直连暂不可用");
+    const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
+    const boards = parseSectorRankBoards(payload.data?.diff);
+    if (!boards.length) throw new Error("板块行情直连暂无数据");
+    const risers = boards.slice(0, 5);
+    const fallers = boards.slice(Math.max(5, boards.length - 5)).reverse();
+    await Promise.all([...risers, ...fallers].map(async (board) => {
+      try {
+        const url = `${base}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;
+        const detail = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+        if (!detail.ok) return;
+        const detailPayload = await detail.json() as { data?: { diff?: Array<Record<string, unknown>> } };
+        board.stocks = (detailPayload.data?.diff ?? []).map((item) => ({
+          code: String(item.f12 ?? ""), name: String(item.f14 ?? ""), change: finiteNumber(item.f3),
+        })).filter((row) => row.code && row.name && row.change !== null).slice(0, 3);
+      } catch { /* 单个板块明细缺失不影响整体榜单。 */ }
+    }));
+    return { risers, fallers, meta: { mode: "live", updatedAt: Date.now(), source: "行业板块 · 东方财富直连" } };
   } finally {
     window.clearTimeout(timer);
   }
@@ -2308,12 +2362,60 @@ function StrongUnsealedPage({ onPick, updateConnection }: { onPick: (stock: Stoc
   </main>;
 }
 
+function SectorRankCardItem({ board, index }: { board: SectorRankCard; index: number }) {
+  return (
+    <div className="sector-rank-item">
+      <div className="sector-rank-head">
+        <em>{index + 1}</em>
+        <strong>{board.name}</strong>
+        {board.upCount !== null && board.downCount !== null && <small>涨{board.upCount}·跌{board.downCount}</small>}
+        <span className={tone(board.change)}>{signed(board.change)}</span>
+        <span className={`sector-rank-flow ${tone(board.inflow)}`}>{board.inflow === null ? "—" : `${board.inflow > 0 ? "+" : ""}${amount(board.inflow)}`}</span>
+      </div>
+      {board.stocks.length > 0 && (
+        <p className="sector-rank-stocks">
+          {board.stocks.map((row) => <span key={row.code}>{row.name}<em className={tone(row.change)}>{signed(row.change)}</em></span>)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
   const [data, setData] = useState<CapitalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const dataRef = useRef<CapitalData | null>(null);
   const busyRef = useRef(false);
+  const [sectorData, setSectorData] = useState<SectorRankingData | null>(null);
+  const [sectorLoading, setSectorLoading] = useState(true);
+  const sectorRef = useRef<SectorRankingData | null>(null);
+  const sectorBusyRef = useRef(false);
+  const loadSectors = useCallback(async () => {
+    if (sectorBusyRef.current) return;
+    sectorBusyRef.current = true;
+    setSectorLoading(true);
+    try {
+      let next: SectorRankingData;
+      try {
+        next = await fetchDirectSectorRanking();
+      } catch {
+        next = await fetchJson<SectorRankingData>("/api/market?action=sector-ranking", 9_000);
+      }
+      if (next.risers.length > 0 || next.fallers.length > 0) {
+        sectorRef.current = next;
+        setSectorData(next);
+        updateConnection(next.meta, "sector-rank");
+      } else {
+        updateConnection({ ...next.meta, mode: "stale" }, "sector-rank");
+      }
+    } catch {
+      updateConnection({ mode: sectorRef.current ? "stale" : "offline", updatedAt: sectorRef.current?.meta.updatedAt || 0, source: "板块排行暂不可用" }, "sector-rank");
+    } finally {
+      sectorBusyRef.current = false;
+      setSectorLoading(false);
+    }
+  }, [updateConnection]);
   const load = useCallback(async () => {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -2351,7 +2453,7 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
     let cancelled = false;
     let timer = 0;
     const tick = async () => {
-      if (document.visibilityState === "visible") await load();
+      if (document.visibilityState === "visible") await Promise.all([load(), loadSectors()]);
       if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 45_000 : 180_000);
     };
     const bootstrap = window.setTimeout(() => {
@@ -2367,7 +2469,7 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
       tick();
     }, 0);
     return () => { cancelled = true; window.clearTimeout(bootstrap); window.clearTimeout(timer); };
-  }, [load, updateConnection]);
+  }, [load, loadSectors, updateConnection]);
   const mainNet = data?.flow.at(-1)?.main ?? null;
   if (loading && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><LoadingRows count={12} /></section></div>;
   if (error && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><EmptyState title="资金流连接失败" detail={error} /><button type="button" className="retry" onClick={load}>重新连接</button></section></div>;
@@ -2377,6 +2479,20 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
       <div className="capital-hero"><div><span>资金流向 · 000300</span><h1>沪深300资金温度</h1><p>主力资金净流入逐分钟累计值</p><DataStamp meta={data?.meta} label="资金流向" compact /></div><div className="capital-price"><small>{data?.quote.name}</small><strong>{number(data?.quote.price)}</strong><em className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</em></div></div>
       <div className="capital-kpis"><div><span>主力净流入</span><strong className={tone(mainNet)}>{amount(mainNet)}</strong><em>当前累计</em></div><div><span>沪深300涨幅</span><strong className={tone(data?.quote.changePercent)}>{signed(data?.quote.changePercent)}</strong><em>指数表现</em></div><div><span>行情涨速</span><strong className={tone(data?.quote.speed)}>{signed(data?.quote.speed)}</strong><em>短时动量</em></div><div><span>最近同步</span><strong>{shortTime(data?.meta.updatedAt)}</strong><em>{data?.meta.mode === "stale" ? "缓存保护" : "实时数据"}</em></div></div>
       <div className="flow-card"><div className="section-head"><div><span>盘中主力资金</span><strong>主力资金轨迹</strong></div><button onClick={load} disabled={loading}>{loading ? "同步中…" : "重新同步"}</button></div><FlowChart rows={data?.flow || []} /></div>
+      <section className="sector-rank">
+        <div className="section-head"><div><span>板块雷达</span><strong>行业板块涨跌排行</strong></div><button onClick={loadSectors} disabled={sectorLoading}>{sectorLoading ? "同步中…" : "重新同步"}</button></div>
+        <div className="sector-rank-grid">
+          <div className="sector-rank-col">
+            <div className="rank-title up"><span>▲</span><strong>领涨板块</strong></div>
+            {sectorData?.risers.length ? sectorData.risers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "暂无板块数据" : "正在同步板块行情…"}</p>}
+          </div>
+          <div className="sector-rank-col">
+            <div className="rank-title down"><span>▼</span><strong>领跌板块</strong></div>
+            {sectorData?.fallers.length ? sectorData.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "暂无板块数据" : "正在同步板块行情…"}</p>}
+          </div>
+        </div>
+        <div className="rank-note"><strong>口径说明</strong><p>行业板块采用东方财富行业分类，已剔除成分股过少的板块；领涨/领跌各取涨跌幅前五，板块下方小字为板块内涨跌幅前三的个股；右侧数值为主力资金净额，正为净流入、负为净流出。</p></div>
+      </section>
     </main>
     <aside className="capital-rank panel"><div className="panel-title"><div><span>行业资金</span><strong>行业资金榜</strong></div><em>前5名</em></div><div className="flow-ranks"><section><div className="rank-title up"><span>▲</span><strong>净流入领先</strong></div>{data?.inflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="up">{amount(item.amount)}</strong></div>)}</section><section><div className="rank-title down"><span>▼</span><strong>净流出领先</strong></div>{data?.outflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="down">{amount(item.amount)}</strong></div>)}</section></div><div className="rank-note"><strong>口径说明</strong><p>主力净流入来自行情源资金流接口；榜单按申万/东财行业板块净额排序，显示当前累计值。</p></div></aside>
   </div>;
