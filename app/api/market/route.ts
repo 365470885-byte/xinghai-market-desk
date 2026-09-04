@@ -1193,8 +1193,8 @@ const NON_CONCEPT_PATTERNS = [
   /^(B股|A股|ST股|含B股|次新股|融资融券|转融券标的|沪股通|深股通|QFII重仓|机构重仓)$/,
 ];
 
-async function thsIndustrySectors() {
-  const result = await resilientGbkText("https://q.10jqka.com.cn/thshy/", 30_000);
+async function thsIndustrySectors(options: RequestOptions = {}) {
+  const result = await resilientGbkText("https://q.10jqka.com.cn/thshy/", 30_000, options);
   const rows = Array.from(result.value.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
   const quoted = rows.map((row) => {
     const code = row[1].match(/thshy\/detail\/code\/(\d+)/i)?.[1] ?? "";
@@ -1221,9 +1221,9 @@ async function thsIndustrySectors() {
   return { items, result };
 }
 
-async function thsIndustryStocks(code: string) {
+async function thsIndustryStocks(code: string, options: RequestOptions = {}) {
   const thsCode = code.replace(/^THS/i, "");
-  const result = await resilientGbkText(`https://q.10jqka.com.cn/thshy/detail/code/${thsCode}/`, 16_000);
+  const result = await resilientGbkText(`https://q.10jqka.com.cn/thshy/detail/code/${thsCode}/`, 16_000, options);
   const rows = Array.from(result.value.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
   const items = rows.map((row) => {
     const cells = htmlCells(row[1]);
@@ -1407,7 +1407,7 @@ async function sectorRanking() {
     if (boards.length) boardMeta = { fetchedAt: result.fetchedAt, mode: result.mode };
   } catch { /* 东财不可用时走同花顺。 */ }
   if (!boards.length) {
-    const ths = await thsIndustrySectors();
+    const ths = await thsIndustrySectors({ attempts: 1, timeoutMs: 3_500 });
     boards = ths.items
       .filter((item) => item.change !== null && !/[ⅠⅡⅢ]$/.test(item.name))
       .map((item) => ({ code: item.code, name: item.name, change: item.change, inflow: item.inflow, upCount: null, downCount: null, stocks: [] as SectorRankStock[] }))
@@ -1421,7 +1421,7 @@ async function sectorRanking() {
   await Promise.all([...risers, ...fallers].map(async (board) => {
     try {
       if (board.code.startsWith("THS")) {
-        const detail = await thsIndustryStocks(board.code);
+        const detail = await thsIndustryStocks(board.code, { attempts: 1, timeoutMs: 2_500 });
         board.stocks = detail.items
           .filter((row) => row.change !== null)
           .sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY))
