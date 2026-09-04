@@ -1391,8 +1391,8 @@ async function sectorRanking() {
       && (board.upCount === null || board.downCount === null || board.upCount + board.downCount >= SECTOR_RANK_MIN_MEMBERS))
     .sort((a: SectorRankCard, b: SectorRankCard) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
   if (!boards.length) throw new Error("板块行情暂时无法连接");
-  const risers = boards.slice(0, 5);
-  const fallers = boards.slice(Math.max(5, boards.length - 5)).reverse();
+  const risers = boards.filter((board) => (board.change ?? 0) > 0).slice(0, 5);
+  const fallers = boards.filter((board) => (board.change ?? 0) < 0).slice(-5).reverse();
   await Promise.all([...risers, ...fallers].map(async (board) => {
     try {
       const url = `${EASTMONEY}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;

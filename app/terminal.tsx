@@ -556,8 +556,8 @@ async function fetchDirectSectorRanking(): Promise<SectorRankingData> {
     const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
     const boards = parseSectorRankBoards(payload.data?.diff);
     if (!boards.length) throw new Error("板块行情直连暂无数据");
-    const risers = boards.slice(0, 5);
-    const fallers = boards.slice(Math.max(5, boards.length - 5)).reverse();
+    const risers = boards.filter((board) => (board.change ?? 0) > 0).slice(0, 5);
+    const fallers = boards.filter((board) => (board.change ?? 0) < 0).slice(-5).reverse();
     await Promise.all([...risers, ...fallers].map(async (board) => {
       try {
         const url = `${base}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;
@@ -2484,14 +2484,14 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
         <div className="sector-rank-grid">
           <div className="sector-rank-col">
             <div className="rank-title up"><span>▲</span><strong>领涨板块</strong></div>
-            {sectorData?.risers.length ? sectorData.risers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "暂无板块数据" : "正在同步板块行情…"}</p>}
+            {sectorData?.risers.length ? sectorData.risers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "今日板块普跌，暂无上涨板块" : "正在同步板块行情…"}</p>}
           </div>
           <div className="sector-rank-col">
             <div className="rank-title down"><span>▼</span><strong>领跌板块</strong></div>
-            {sectorData?.fallers.length ? sectorData.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "暂无板块数据" : "正在同步板块行情…"}</p>}
+            {sectorData?.fallers.length ? sectorData.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "今日板块普涨，暂无下跌板块" : "正在同步板块行情…"}</p>}
           </div>
         </div>
-        <div className="rank-note"><strong>口径说明</strong><p>行业板块采用东方财富行业分类，已剔除成分股过少的板块；领涨/领跌各取涨跌幅前五，板块下方小字为板块内涨跌幅前三的个股；右侧数值为主力资金净额，正为净流入、负为净流出。</p></div>
+        <div className="rank-note"><strong>口径说明</strong><p>行业板块采用东方财富行业分类，已剔除成分股过少的板块；领涨取涨幅前五、领跌取跌幅前五（仅收录真正上涨/下跌的板块），板块下方小字为板块内涨跌幅前三的个股；右侧数值为主力资金净额，正为净流入、负为净流出。</p></div>
       </section>
     </main>
     <aside className="capital-rank panel"><div className="panel-title"><div><span>行业资金</span><strong>行业资金榜</strong></div><em>前5名</em></div><div className="flow-ranks"><section><div className="rank-title up"><span>▲</span><strong>净流入领先</strong></div>{data?.inflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="up">{amount(item.amount)}</strong></div>)}</section><section><div className="rank-title down"><span>▼</span><strong>净流出领先</strong></div>{data?.outflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="down">{amount(item.amount)}</strong></div>)}</section></div><div className="rank-note"><strong>口径说明</strong><p>主力净流入来自行情源资金流接口；榜单按申万/东财行业板块净额排序，显示当前累计值。</p></div></aside>
