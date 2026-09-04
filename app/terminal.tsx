@@ -530,7 +530,7 @@ async function fetchDirectCapital(): Promise<CapitalData> {
 
 const SECTOR_RANK_MIN_MEMBERS = 12;
 
-function parseSectorRankBoards(rows: Array<Record<string, unknown>> = []): SectorRankCard[] {
+function parseSectorRankBoards(rows: Array<Record<string, unknown>> = [], isConcept = false): SectorRankCard[] {
   return rows.map((item) => ({
     code: String(item.f12 ?? ""),
     name: String(item.f14 ?? ""),
@@ -539,26 +539,60 @@ function parseSectorRankBoards(rows: Array<Record<string, unknown>> = []): Secto
     upCount: finiteNumber(item.f104),
     downCount: finiteNumber(item.f105),
     stocks: [] as SectorRankStock[],
-  })).filter((board) => board.code && board.name && board.change !== null
-    && !/[ⅠⅡⅢ]$/.test(board.name)
-    && (board.upCount === null || board.downCount === null || board.upCount + board.downCount >= SECTOR_RANK_MIN_MEMBERS))
-    .sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
+  })).filter((board) => {
+    if (!board.code || !board.name || board.change === null) return false;
+    if (isConcept) {
+      if (/^ST|^ST股$|^超跌股$|^低价股$|^价值股$|^红利破净股$|^长期破净$|^破净股$|^消费风格$|^成长风格$|^大盘|^中盘|^小盘|^高价股$|^绩优股$|^亏损股$|^高股息|^MSCI|^富时|^罗素|^标普|^独角兽概念$|^昨日/.test(board.name)) return false;
+      if (/^参股|^增持|^回购|^分拆|^举牌|^股权转让|^员工持股|^股权激励|^中字头$|^含[ABH]股$|^融资融券$|^转融券|^沪股通$|^深股通$|^北交所$|^新股$|次新股/.test(board.name)) return false;
+      if (/^社保重仓|^养老金|^险资重仓|^QFII重仓|^机构重仓|^基金重仓|^信托重仓|^外资重仓|^券商重仓|^国家队重仓/.test(board.name)) return false;
+      if (/^京津冀$|^长三角|^粤港澳|^大湾区|^自贸区$|^雄安新区|^振兴|^西部|^东北|^中部|^共同富裕|^乡村振兴$|^内贸流通$|^统一大市场$|^房屋检测$|^跨境电商$|^电子商务$|^社区团购$|^拼多多概念$|^快手概念$|^小红书概念$|^盲盒经济$|^味蕾经济$|^谷子经济$|^MLOps概念$|^SPD概念$|^退税商店$/.test(board.name)) return false;
+    } else if (/[ⅠⅡⅢ]$/.test(board.name)) {
+      return false;
+    }
+    if (board.upCount === null || board.downCount === null) return true;
+    return board.upCount + board.downCount >= SECTOR_RANK_MIN_MEMBERS;
+  }).sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
 }
 
 async function fetchDirectSectorRanking(): Promise<SectorRankingData> {
   const base = "https://push2delay.eastmoney.com/api/qt";
-  const boardUrl = `${base}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m%3A90%2Bt%3A2&fields=f12,f14,f3,f62,f104,f105`;
+  const industryUrl = `${base}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m%3A90%2Bt%3A2&fields=f12,f14,f3,f62,f104,f105`;
+  const conceptUrl = `${base}/clist/get?pn=1&pz=200&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m%3A90%2Bt%3A3&fields=f12,f14,f3,f62,f104,f105`;
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 4_500);
+  const timer = window.setTimeout(() => controller.abort(), 6_500);
   try {
-    const response = await fetch(boardUrl, { signal: controller.signal, cache: "no-store", mode: "cors" });
-    if (!response.ok) throw new Error("板块行情直连暂不可用");
-    const payload = await response.json() as { data?: { diff?: Array<Record<string, unknown>> } };
-    const boards = parseSectorRankBoards(payload.data?.diff);
-    if (!boards.length) throw new Error("板块行情直连暂无数据");
-    const risers = boards.filter((board) => (board.change ?? 0) > 0).slice(0, 5);
-    const fallers = boards.filter((board) => (board.change ?? 0) < 0).slice(-5).reverse();
-    await Promise.all([...risers, ...fallers].map(async (board) => {
+    const [indResp, concResp] = await Promise.all([
+      fetch(industryUrl, { signal: controller.signal, cache: "no-store", mode: "cors" }),
+      fetch(conceptUrl, { signal: controller.signal, cache: "no-store", mode: "cors" }).catch(() => null),
+    ]);
+    if (!indResp.ok) throw new Error("板块行情直连暂不可用");
+    const indPayload = await indResp.json() as { data?: { diff?: Array<Record<string, unknown>> } };
+    const industryBoards = parseSectorRankBoards(indPayload.data?.diff, false);
+    if (!industryBoards.length) throw new Error("板块行情直连暂无数据");
+    let conceptBoards: SectorRankCard[] = [];
+    if (concResp && concResp.ok) {
+      try {
+        const concPayload = await concResp.json() as { data?: { diff?: Array<Record<string, unknown>> } };
+        conceptBoards = parseSectorRankBoards(concPayload.data?.diff, true);
+      } catch { /* 概念板块失败时不影响行业主流程。 */ }
+    }
+    // 领涨：只用行业板块
+    const risers = industryBoards.filter((board) => (board.change ?? 0) > 0).slice(0, 5);
+    // 领跌：行业 + 概念合并后，按下跌家数降序取前五（家数 ≥ 3）
+    const boardsForFallers = conceptBoards.length ? [...industryBoards, ...conceptBoards] : industryBoards;
+    const fallers = boardsForFallers
+      .filter((board) => (board.downCount ?? 0) >= 3)
+      .slice()
+      .sort((a, b) => (b.downCount ?? Number.NEGATIVE_INFINITY) - (a.downCount ?? Number.NEGATIVE_INFINITY))
+      .slice(0, 5);
+    const detailBatch = [...risers, ...fallers];
+    const seenCodes = new Set<string>();
+    const detailTargets = detailBatch.filter((b) => {
+      if (seenCodes.has(b.code)) return false;
+      seenCodes.add(b.code);
+      return true;
+    });
+    await Promise.all(detailTargets.map(async (board) => {
       try {
         const url = `${base}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;
         const detail = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
@@ -569,7 +603,7 @@ async function fetchDirectSectorRanking(): Promise<SectorRankingData> {
         })).filter((row) => row.code && row.name && row.change !== null).slice(0, 3);
       } catch { /* 单个板块明细缺失不影响整体榜单。 */ }
     }));
-    return { risers, fallers, meta: { mode: "live", updatedAt: Date.now(), source: "行业板块 · 东方财富直连" } };
+    return { risers, fallers, meta: { mode: "live", updatedAt: Date.now(), source: "行业·概念板块 · 东方财富直连" } };
   } finally {
     window.clearTimeout(timer);
   }
@@ -2487,11 +2521,11 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
             {sectorData?.risers.length ? sectorData.risers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "今日板块普跌，暂无上涨板块" : "正在同步板块行情…"}</p>}
           </div>
           <div className="sector-rank-col">
-            <div className="rank-title down"><span>▼</span><strong>领跌板块</strong></div>
-            {sectorData?.fallers.length ? sectorData.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "今日板块普涨，暂无下跌板块" : "正在同步板块行情…"}</p>}
+            <div className="rank-title down"><span>▼</span><strong>领跌板块<small>按下跌家数</small></strong></div>
+            {sectorData?.fallers.length ? sectorData.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "今日无下跌个股集中的板块" : "正在同步板块行情…"}</p>}
           </div>
         </div>
-        <div className="rank-note"><strong>口径说明</strong><p>行业板块采用东方财富行业分类，已剔除成分股过少的板块；领涨取涨幅前五、领跌取跌幅前五（仅收录真正上涨/下跌的板块），板块下方小字为板块内涨跌幅前三的个股；右侧数值为主力资金净额，正为净流入、负为净流出。</p></div>
+        <div className="rank-note"><strong>口径说明</strong><p>行业板块采用东方财富行业分类，概念板块为东方财富概念分类（已剔除风格/篮子/个股衍生类伪概念）；领涨仅取行业涨幅前五；领跌合并行业与概念板块后，按板块内下跌个股家数降序取前五（家数≥3），精准反映当前市场个股下跌最集中的板块；板块下方小字为板块内涨跌幅前三的个股；右侧数值为主力资金净额，正为净流入、负为净流出。</p></div>
       </section>
     </main>
     <aside className="capital-rank panel"><div className="panel-title"><div><span>行业资金</span><strong>行业资金榜</strong></div><em>前5名</em></div><div className="flow-ranks"><section><div className="rank-title up"><span>▲</span><strong>净流入领先</strong></div>{data?.inflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="up">{amount(item.amount)}</strong></div>)}</section><section><div className="rank-title down"><span>▼</span><strong>净流出领先</strong></div>{data?.outflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="down">{amount(item.amount)}</strong></div>)}</section></div><div className="rank-note"><strong>口径说明</strong><p>主力净流入来自行情源资金流接口；榜单按申万/东财行业板块净额排序，显示当前累计值。</p></div></aside>
