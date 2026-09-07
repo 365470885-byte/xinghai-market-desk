@@ -1419,7 +1419,7 @@ async function sectorRanking() {
   let source = "行业板块涨跌 · 东方财富行情";
   let useThsDetail = false;
   try {
-    // 并发请求：行业板块(m:90+t:2) + 概念板块(m:90+t:3)，领涨只用行业，领跌合并两者。
+    // 并发请求：行业板块(m:90+t:2) + 概念板块(m:90+t:3)，合并后按 change 排序取前5涨跌榜。
     const industryUrl = `${EASTMONEY}/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:2")}&fields=f12,f14,f3,f62,f104,f105`;
     const conceptUrl = `${EASTMONEY}/clist/get?pn=1&pz=200&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent("m:90+t:3")}&fields=f12,f14,f3,f62,f104,f105`;
     const [indResult, concResult] = await Promise.allSettled([fetchSectorBoard(industryUrl), fetchSectorBoard(conceptUrl)]);
@@ -1444,41 +1444,31 @@ async function sectorRanking() {
     useThsDetail = true;
   }
   if (!industryBoards.length) throw new Error("板块行情暂时无法连接");
-  // 领涨：只用行业板块，涨幅前五（正数涨幅）
-  industryBoards.sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY));
-  const risers = industryBoards.filter((board) => (board.change ?? 0) > 0).slice(0, 5);
-  // 领跌：行业 + 概念 合并后，按板块内下跌个股家数降序取前五（家数 ≥ 3），
-  //      反映个股下跌最集中的板块；若缺失家数字段（同花顺兜底），先取 change 最小的 10 个候选，
-  //      拉成分明细后再按实际下跌个股数排序。
-  let fallers: SectorRankCard[] = [];
-  let fallerCandidates: SectorRankCard[] = [];
-  const boardsForFallers = conceptBoards.length ? [...industryBoards, ...conceptBoards] : industryBoards;
-  if (boardsForFallers.some((b) => b.downCount !== null)) {
-    fallers = boardsForFallers
-      .filter((board) => (board.downCount ?? 0) >= 3)
-      .slice()
-      .sort((a, b) => (b.downCount ?? Number.NEGATIVE_INFINITY) - (a.downCount ?? Number.NEGATIVE_INFINITY))
-      .slice(0, 5);
-  } else {
-    fallerCandidates = boardsForFallers.slice().sort((a, b) => (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY)).slice(0, 10);
-  }
-  const detailBatch = [...risers, ...fallers, ...fallerCandidates];
+  // 行业+概念 合并后统一排序（同花顺口径）：涨幅前五 + 跌幅前五
+  const allBoards = conceptBoards.length ? [...industryBoards, ...conceptBoards] : industryBoards;
+  // 涨幅前五：change 降序
+  const risers = [...allBoards].sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY)).slice(0, 5);
+  // 跌幅前五：change 升序（同花顺口径，全市场普涨时也取涨幅最小的 5 个）
+  const fallers = [...allBoards].sort((a, b) => (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY)).slice(0, 5);
   const seenCodes = new Set<string>();
-  const detailTargets = detailBatch.filter((b) => {
+  const detailTargets = [...risers, ...fallers].filter((b) => {
     if (seenCodes.has(b.code)) return false;
     seenCodes.add(b.code);
     return true;
   });
+  // 为领涨板块拉成分股（按 change 降序取前三 = 板块内涨幅前三）
+  // 为领跌板块拉成分股（按 change 升序取前三 = 板块内跌幅前三，同花顺风格）
+  const riserCodes = new Set(risers.map((r) => r.code));
   await Promise.all(detailTargets.map(async (board) => {
     try {
       if (useThsDetail || board.code.startsWith("THS")) {
         const detail = await thsIndustryStocks(board.code, { attempts: 1, timeoutMs: 2_500 });
-        board.stocks = detail.items
+        const sortedStocks = detail.items
           .filter((row) => row.change !== null)
-          .sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY))
-          .slice(0, 3)
-          .map((row) => ({ code: row.code, name: row.name, change: row.change }));
-        // 同花顺路径：根据成分明细统计涨跌家数
+          .sort((a, b) => (riserCodes.has(board.code)
+            ? (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY)
+            : (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY)));
+        board.stocks = sortedStocks.slice(0, 3).map((row) => ({ code: row.code, name: row.name, change: row.change }));
         if (board.upCount === null || board.downCount === null) {
           board.upCount = detail.items.filter((row) => (row.change ?? 0) > 0).length;
           board.downCount = detail.items.filter((row) => (row.change ?? 0) < 0).length;
@@ -1487,21 +1477,18 @@ async function sectorRanking() {
       }
       const url = `${EASTMONEY}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${board.code}`)}&fields=f12,f14,f3`;
       const detail = await fetchSectorBoard(url);
-      board.stocks = (detail.value?.data?.diff ?? [])
+      const raw = (detail.value?.data?.diff ?? [])
         .map((item: Record<string, unknown>) => ({
           code: String(item.f12 ?? ""), name: String(item.f14 ?? ""), change: numeric(item.f3),
         }))
-        .filter((row: SectorRankStock) => row.code && row.name && row.change !== null)
-        .slice(0, 3);
+        .filter((row: SectorRankStock) => row.code && row.name && row.change !== null);
+      // 领涨板块：涨幅前三；领跌板块：跌幅前三
+      const sorted = riserCodes.has(board.code)
+        ? raw.sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY))
+        : raw.sort((a, b) => (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY));
+      board.stocks = sorted.slice(0, 3);
     } catch { /* 板块缺少成分明细时保留主榜单。 */ }
   }));
-  // 同花顺兜底路径：从候选中按实际下跌家数选出领跌前五
-  if (fallerCandidates.length && !fallers.length) {
-    fallers = fallerCandidates
-      .filter((board) => (board.downCount ?? 0) >= 3)
-      .sort((a, b) => (b.downCount ?? Number.NEGATIVE_INFINITY) - (a.downCount ?? Number.NEGATIVE_INFINITY))
-      .slice(0, 5);
-  }
   return {
     risers,
     fallers,

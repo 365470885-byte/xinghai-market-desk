@@ -576,18 +576,13 @@ async function fetchDirectSectorRanking(): Promise<SectorRankingData> {
         conceptBoards = parseSectorRankBoards(concPayload.data?.diff, true);
       } catch { /* 概念板块失败时不影响行业主流程。 */ }
     }
-    // 领涨：只用行业板块
-    const risers = industryBoards.filter((board) => (board.change ?? 0) > 0).slice(0, 5);
-    // 领跌：行业 + 概念合并后，按下跌家数降序取前五（家数 ≥ 3）
-    const boardsForFallers = conceptBoards.length ? [...industryBoards, ...conceptBoards] : industryBoards;
-    const fallers = boardsForFallers
-      .filter((board) => (board.downCount ?? 0) >= 3)
-      .slice()
-      .sort((a, b) => (b.downCount ?? Number.NEGATIVE_INFINITY) - (a.downCount ?? Number.NEGATIVE_INFINITY))
-      .slice(0, 5);
-    const detailBatch = [...risers, ...fallers];
+    // 行业+概念 合并后统一排序（同花顺口径）：涨幅前五 + 跌幅前五
+    const allBoards = conceptBoards.length ? [...industryBoards, ...conceptBoards] : industryBoards;
+    const risers = [...allBoards].sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY)).slice(0, 5);
+    const fallers = [...allBoards].sort((a, b) => (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY)).slice(0, 5);
+    const riserCodes = new Set(risers.map((r) => r.code));
     const seenCodes = new Set<string>();
-    const detailTargets = detailBatch.filter((b) => {
+    const detailTargets = [...risers, ...fallers].filter((b) => {
       if (seenCodes.has(b.code)) return false;
       seenCodes.add(b.code);
       return true;
@@ -598,9 +593,13 @@ async function fetchDirectSectorRanking(): Promise<SectorRankingData> {
         const detail = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
         if (!detail.ok) return;
         const detailPayload = await detail.json() as { data?: { diff?: Array<Record<string, unknown>> } };
-        board.stocks = (detailPayload.data?.diff ?? []).map((item) => ({
+        const raw = (detailPayload.data?.diff ?? []).map((item) => ({
           code: String(item.f12 ?? ""), name: String(item.f14 ?? ""), change: finiteNumber(item.f3),
-        })).filter((row) => row.code && row.name && row.change !== null).slice(0, 3);
+        })).filter((row) => row.code && row.name && row.change !== null);
+        // 领涨板块：涨幅前三；领跌板块：跌幅前三（同花顺风格）
+        board.stocks = riserCodes.has(board.code)
+          ? raw.sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY)).slice(0, 3)
+          : raw.sort((a, b) => (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY)).slice(0, 3);
       } catch { /* 单个板块明细缺失不影响整体榜单。 */ }
     }));
     return { risers, fallers, meta: { mode: "live", updatedAt: Date.now(), source: "行业·概念板块 · 东方财富直连" } };
@@ -2521,11 +2520,11 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
             {sectorData?.risers.length ? sectorData.risers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "今日板块普跌，暂无上涨板块" : "正在同步板块行情…"}</p>}
           </div>
           <div className="sector-rank-col">
-            <div className="rank-title down"><span>▼</span><strong>领跌板块<small>按下跌家数</small></strong></div>
-            {sectorData?.fallers.length ? sectorData.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">{sectorData ? "今日无下跌个股集中的板块" : "正在同步板块行情…"}</p>}
+            <div className="rank-title down"><span>▼</span><strong>领跌板块</strong></div>
+            {sectorData?.fallers.length ? sectorData.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />) : <p className="sector-rank-empty">正在同步板块行情…</p>}
           </div>
         </div>
-        <div className="rank-note"><strong>口径说明</strong><p>行业板块采用东方财富行业分类，概念板块为东方财富概念分类（已剔除风格/篮子/个股衍生类伪概念）；领涨仅取行业涨幅前五；领跌合并行业与概念板块后，按板块内下跌个股家数降序取前五（家数≥3），精准反映当前市场个股下跌最集中的板块；板块下方小字为板块内涨跌幅前三的个股；右侧数值为主力资金净额，正为净流入、负为净流出。</p></div>
+        <div className="rank-note"><strong>口径说明</strong><p>行业+概念板块合并排序（东方财富行业分类 + 概念分类，已剔除风格/篮子/个股衍生类伪概念）；领涨取涨幅前五，领跌取跌幅前五（全市场普涨时取涨幅最小的五个），板块下方小字为板块内领涨/领跌前三的个股；右侧数值为主力资金净额，正为净流入、负为净流出。</p></div>
       </section>
     </main>
     <aside className="capital-rank panel"><div className="panel-title"><div><span>行业资金</span><strong>行业资金榜</strong></div><em>前5名</em></div><div className="flow-ranks"><section><div className="rank-title up"><span>▲</span><strong>净流入领先</strong></div>{data?.inflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="up">{amount(item.amount)}</strong></div>)}</section><section><div className="rank-title down"><span>▼</span><strong>净流出领先</strong></div>{data?.outflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="down">{amount(item.amount)}</strong></div>)}</section></div><div className="rank-note"><strong>口径说明</strong><p>主力净流入来自行情源资金流接口；榜单按申万/东财行业板块净额排序，显示当前累计值。</p></div></aside>
