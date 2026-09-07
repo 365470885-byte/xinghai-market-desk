@@ -1484,8 +1484,8 @@ async function sectorRanking() {
         .filter((row: SectorRankStock) => row.code && row.name && row.change !== null);
       // 领涨板块：涨幅前三；领跌板块：跌幅前三
       const sorted = riserCodes.has(board.code)
-        ? raw.sort((a, b) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY))
-        : raw.sort((a, b) => (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY));
+        ? raw.sort((a: SectorRankStock, b: SectorRankStock) => (b.change ?? Number.NEGATIVE_INFINITY) - (a.change ?? Number.NEGATIVE_INFINITY))
+        : raw.sort((a: SectorRankStock, b: SectorRankStock) => (a.change ?? Number.POSITIVE_INFINITY) - (b.change ?? Number.POSITIVE_INFINITY));
       board.stocks = sorted.slice(0, 3);
     } catch { /* 板块缺少成分明细时保留主榜单。 */ }
   }));
