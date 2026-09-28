@@ -3,10 +3,10 @@
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WatchlistImportDialog, type ImportedStock } from "./watchlist-import";
 
-type PageKey = "watch" | "capital" | "rankings" | "strong-unsealed";
+type PageKey = "watch" | "capital" | "rankings" | "strong-unsealed" | "review";
 type ChartMode = "time" | "day";
 type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: number; source: string };
-type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings" | "strong-unsealed" | "sector-rank";
+type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings" | "strong-unsealed" | "sector-rank" | "review";
 type FeedSnapshot = MarketMeta & { label: string };
 type WatchSort = "manual" | "change" | "speed" | "amount";
 type RankingSort = "rise" | "fall" | "speed3" | "amount";
@@ -50,6 +50,37 @@ type SectorRankCard = {
   stocks: SectorRankStock[];
 };
 type SectorRankingData = { risers: SectorRankCard[]; fallers: SectorRankCard[]; meta: MarketMeta };
+
+type ReviewStock = {
+  code: string; name: string; price: number | null; change: number | null;
+  amount: number | null; marketCapFlow: number | null; turnover: number | null;
+  sealFund: number | null; firstSealTime: string; lastSealTime: string;
+  brokenTimes: number | null; boards: number; industry: string; amplitude: number | null;
+};
+type ReviewLadder = { boards: number; count: number; stocks: ReviewStock[] };
+type ReviewTemperature = { score: number; label: string; signals: string[] };
+type DragonItem = {
+  code: string; name: string; reason: string; close: number | null; change: number | null;
+  net: number | null; buy: number | null; sell: number | null; total: number | null;
+  amount: number | null; turnover: number | null; freeMarketCap: number | null;
+};
+type ReviewData = {
+  date: string; status: "pending" | "ready";
+  indices: Array<{ code: string; name: string; price: number | null; change: number | null }>;
+  turnover: { currentAmount: number; previousAmount: number; deltaPercent: number; currentDate: string } | null;
+  breadth: { up: number; down: number; flat: number; total: number } | null;
+  sentiment: {
+    limitUpCount: number; limitDownCount: number; brokenCount: number;
+    brokenRate: number | null; maxBoards: number;
+    ladder: ReviewLadder[]; temperature: ReviewTemperature;
+  };
+  limitUps: ReviewStock[];
+  limitDowns: ReviewStock[];
+  broken: ReviewStock[];
+  sectors: { risers: SectorRankCard[]; fallers: SectorRankCard[] } | null;
+  dragon: { published: boolean; items: DragonItem[] } | null;
+  meta: MarketMeta;
+};
 
 const DEFAULT_STOCKS: Stock[] = [
   { code: "CNOW", market: 101, name: "富时A50期指" },
@@ -137,7 +168,7 @@ const QUOTES_CACHE_KEY = "xinghai_quotes_cache_v1";
 const CAPITAL_CACHE_KEY = "xinghai_capital_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
-  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行", "strong-unsealed": "8%以上未涨停", "sector-rank": "板块涨跌排行",
+  sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行", "strong-unsealed": "8%以上未涨停", "sector-rank": "板块涨跌排行", review: "每日复盘",
 };
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
@@ -1972,8 +2003,8 @@ export function StockTerminal() {
         event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return;
       }
       if (isTextEntry(event.target) || event.altKey || event.metaKey || event.ctrlKey) return;
-      if (event.key === "1" || event.key === "2" || event.key === "3" || event.key === "4") {
-        setPage(event.key === "1" ? "watch" : event.key === "2" ? "capital" : event.key === "3" ? "rankings" : "strong-unsealed"); return;
+      if (event.key === "1" || event.key === "2" || event.key === "3" || event.key === "4" || event.key === "5") {
+        setPage(event.key === "1" ? "watch" : event.key === "2" ? "capital" : event.key === "3" ? "rankings" : event.key === "4" ? "strong-unsealed" : "review"); return;
       }
       if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "k") {
         if (!displayedStocks.length) return;
@@ -2018,7 +2049,7 @@ export function StockTerminal() {
           <div><strong>星辰大海</strong><small>行情研究台</small></div>
         </div>
         <nav className="main-tabs" aria-label="主要页面">
-          {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"], ["strong-unsealed", "强势未板"] ] as Array<[PageKey, string]>).map(([key, label]) => (
+          {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"], ["strong-unsealed", "强势未板"], ["review", "每日复盘"] ] as Array<[PageKey, string]>).map(([key, label]) => (
             <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => setPage(key)}>{label}</button>
           ))}
         </nav>
@@ -2124,13 +2155,14 @@ export function StockTerminal() {
         <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
           <section className="panel pulse-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>市场快照</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => selectStock(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
           <section className="panel reliability-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>数据状态</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "优" : connection === "stale" ? "缓" : connection === "offline" ? "断" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
-          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1/2/3/4 切换页面 · 空格键暂停</kbd></section>
+          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1/2/3/4/5 切换页面 · 空格键暂停</kbd></section>
         </aside>
       </div>}
 
       {page === "capital" && <CapitalPage updateConnection={updateConnection} />}
       {page === "rankings" && <RankingsPage onPick={addStock} updateConnection={updateConnection} />}
       {page === "strong-unsealed" && <StrongUnsealedPage onPick={addStock} updateConnection={updateConnection} />}
+      {page === "review" && <ReviewPage onPick={addStock} updateConnection={updateConnection} />}
 
       {menu && <div className="context-menu" role="menu" aria-label="自选股操作" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }}>
         <button type="button" role="menuitem" onClick={() => togglePin(menu.key)}><span aria-hidden="true">◆</span>{pinned.has(menu.key) ? "取消固定" : "固定置顶"}</button>
@@ -2529,4 +2561,363 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
     </main>
     <aside className="capital-rank panel"><div className="panel-title"><div><span>行业资金</span><strong>行业资金榜</strong></div><em>前5名</em></div><div className="flow-ranks"><section><div className="rank-title up"><span>▲</span><strong>净流入领先</strong></div>{data?.inflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="up">{amount(item.amount)}</strong></div>)}</section><section><div className="rank-title down"><span>▼</span><strong>净流出领先</strong></div>{data?.outflow.map((item, index) => <div className="rank-row" key={item.code}><em>{index + 1}</em><span>{item.name}</span><strong className="down">{amount(item.amount)}</strong></div>)}</section></div><div className="rank-note"><strong>口径说明</strong><p>主力净流入来自行情源资金流接口；榜单按申万/东财行业板块净额排序，显示当前累计值。</p></div></aside>
   </div>;
+}
+
+// ===================== 每日复盘（打板接力） =====================
+const REVIEW_NOTES_KEY = "xinghai_review_notes_v1";
+const MISTAKE_OPTIONS = ["追高被套", "选错非主流标的", "单票仓位过重", "止损不够坚决", "情绪化/冲动操作", "违反交易纪律"];
+
+function shiftTradingDay(iso: string, dir: -1 | 1): string {
+  const cursor = new Date(`${iso}T00:00:00+08:00`);
+  for (let i = 0; i < 12; i += 1) {
+    cursor.setDate(cursor.getDate() + dir);
+    const weekday = cursor.toLocaleDateString("en-US", { weekday: "short", timeZone: "Asia/Shanghai" });
+    if (weekday !== "Sat" && weekday !== "Sun") return cursor.toISOString().slice(0, 10);
+  }
+  return iso;
+}
+function reviewStockToStock(stock: ReviewStock): Stock {
+  return { code: stock.code, market: /^6/.test(stock.code) ? 1 : 0, name: stock.name };
+}
+function dragonStockToStock(item: DragonItem): Stock {
+  return { code: item.code, market: /^6/.test(item.code) ? 1 : 0, name: item.name };
+}
+function formatWeekday(iso: string): string {
+  const weekday = new Date(`${iso}T00:00:00+08:00`).toLocaleDateString("zh-CN", { weekday: "short", timeZone: "Asia/Shanghai" });
+  return weekday.replace("星期", "周");
+}
+
+type ReviewNotes = { trades: string; mistakes: string; watchlist: string; plan: string; mistakesChecked: string[] };
+const emptyNotes: ReviewNotes = { trades: "", mistakes: "", watchlist: "", plan: "", mistakesChecked: [] };
+
+function ReviewPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
+  const [data, setData] = useState<ReviewData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [date, setDate] = useState<string>("");
+  const [poolTab, setPoolTab] = useState<"up" | "down" | "broken">("up");
+  const [notes, setNotes] = useState<ReviewNotes>(emptyNotes);
+  const [notesSavedAt, setNotesSavedAt] = useState<number | null>(null);
+  const dataRef = useRef<ReviewData | null>(null);
+  const requestRef = useRef(0);
+  const saveTimer = useRef<number | null>(null);
+
+  const load = useCallback(async (targetDate?: string) => {
+    const requestId = ++requestRef.current;
+    setLoading(true);
+    try {
+      const url = targetDate ? `/api/market?action=review&date=${encodeURIComponent(targetDate)}` : "/api/market?action=review";
+      const next = await fetchJson<ReviewData>(url, 18_000, 0);
+      if (requestId !== requestRef.current) return;
+      dataRef.current = next;
+      setData(next);
+      if (!targetDate) setDate(next.date);
+      setError("");
+      updateConnection(next.meta, "review");
+    } catch (err) {
+      if (requestId !== requestRef.current) return;
+      const previous = dataRef.current;
+      setError(err instanceof Error ? err.message : "复盘数据加载失败");
+      updateConnection({ mode: previous ? "stale" : "offline", updatedAt: previous?.meta.updatedAt || 0, source: previous?.meta.source || "每日复盘暂不可用" }, "review");
+    } finally {
+      if (requestId === requestRef.current) setLoading(false);
+    }
+  }, [updateConnection]);
+
+  // 初始加载（不指定日期，由服务端按 15:30 规则决定最新复盘日）
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        // 收盘后数据基本稳定；15:30 前/17:00 前按较短间隔轮询以便及时更新涨停池与龙虎榜。
+        const sh = shanghaiMarketClock();
+        const mins = sh.minutes;
+        const fast = (mins >= 9 * 60 + 25 && mins <= 15 * 60 + 5) || (mins >= 15 * 60 + 30 && mins < 18 * 60 && !data?.dragon?.published);
+        await load(date || undefined);
+        if (!cancelled) timer = window.setTimeout(tick, fast ? 60_000 : 300_000);
+      } else {
+        if (!cancelled) timer = window.setTimeout(tick, 60_000);
+      }
+    };
+    tick();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [date, data?.dragon?.published, load]);
+
+  // 笔记按日期读写
+  useEffect(() => {
+    if (!date) return;
+    try {
+      const raw = localStorage.getItem(REVIEW_NOTES_KEY);
+      const all = raw ? JSON.parse(raw) as Record<string, ReviewNotes> : {};
+      setNotes(all[date] ? { ...emptyNotes, ...all[date] } : emptyNotes);
+      setNotesSavedAt(null);
+    } catch {
+      setNotes(emptyNotes);
+    }
+  }, [date]);
+
+  const persistNotes = useCallback((next: ReviewNotes) => {
+    if (!date) return;
+    setNotes(next);
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      try {
+        const raw = localStorage.getItem(REVIEW_NOTES_KEY);
+        const all = raw ? JSON.parse(raw) as Record<string, ReviewNotes> : {};
+        all[date] = next;
+        localStorage.setItem(REVIEW_NOTES_KEY, JSON.stringify(all));
+        setNotesSavedAt(Date.now());
+      } catch { /* localStorage 不可用时静默 */ }
+    }, 500) as unknown as number;
+  }, [date]);
+
+  const updateNotes = (field: keyof Omit<ReviewNotes, "mistakesChecked">, value: string) => persistNotes({ ...notes, [field]: value });
+  const toggleMistake = (option: string) => {
+    const mistakesChecked = notes.mistakesChecked.includes(option)
+      ? notes.mistakesChecked.filter((item) => item !== option)
+      : [...notes.mistakesChecked, option];
+    persistNotes({ ...notes, mistakesChecked });
+  };
+
+  if (loading && !data) {
+    return <main className="review-page" id="main-content"><section className="panel"><LoadingRows count={14} /></section></main>;
+  }
+  if (error && !data) {
+    return <main className="review-page" id="main-content"><section className="panel"><EmptyState title="复盘数据连接失败" detail={error} /><button type="button" className="retry" onClick={() => load()}>重新连接</button></section></main>;
+  }
+
+  const sentiment = data?.sentiment;
+  const ladder = sentiment?.ladder ?? [];
+  const poolRows = poolTab === "up" ? (data?.limitUps ?? []) : poolTab === "down" ? (data?.limitDowns ?? []) : (data?.broken ?? []);
+  const dragonItems = data?.dragon?.items ?? [];
+  const dragonPublished = data?.dragon?.published ?? false;
+  const now = shanghaiMarketClock();
+  const isLateEnough = now.minutes >= 17 * 60;
+
+  const metricCards = [
+    { label: "涨停", value: String(sentiment?.limitUpCount ?? 0), tone: "up", hint: "封板家数" },
+    { label: "跌停", value: String(sentiment?.limitDownCount ?? 0), tone: "down", hint: "跌停家数" },
+    { label: "炸板", value: String(sentiment?.brokenCount ?? 0), tone: sentiment && sentiment.brokenCount > 0 ? "down" : "flat", hint: "触及未封" },
+    { label: "炸板率", value: sentiment?.brokenRate === null || sentiment?.brokenRate === undefined ? "—" : `${sentiment.brokenRate.toFixed(1)}%`, tone: sentiment && (sentiment.brokenRate ?? 0) >= 40 ? "down" : "up", hint: "炸板/(涨停+炸板)" },
+    { label: "连板高度", value: `${sentiment?.maxBoards ?? 0}板`, tone: "up", hint: "最高连板" },
+  ];
+
+  return (
+    <main className="review-page" id="main-content">
+      <header className="review-header panel">
+        <div className="review-intro">
+          <span>超短线 · 打板接力</span>
+          <h1>每日复盘</h1>
+          <p>每个交易日 15:30 后生成当日涨停池、连板梯队与情绪温度；龙虎榜通常于 17:00 后由交易所公布，自动补全。</p>
+        </div>
+        <div className="review-tools">
+          <div className="review-date-nav">
+            <button type="button" onClick={() => { if (date) setDate(shiftTradingDay(date, -1)); }} disabled={!date} aria-label="上一交易日">←</button>
+            <div className="review-date-display">
+              <strong>{date || "—"}</strong>
+              <small>{date ? formatWeekday(date) : ""}{data?.status === "pending" ? " · 当日数据将于15:30后更新" : ""}</small>
+            </div>
+            <button type="button" onClick={() => { if (date) setDate(shiftTradingDay(date, 1)); }} disabled={!date} aria-label="下一交易日">→</button>
+          </div>
+          <div className="rankings-status">
+            <DataStamp meta={data?.meta} label="每日复盘" compact />
+            <button type="button" onClick={() => load(date)} disabled={loading}>{loading ? "同步中…" : "立即刷新"}</button>
+          </div>
+        </div>
+      </header>
+
+      {error && data && <div className="ranking-warning" role="status"><strong>复盘刷新暂中断</strong><span>{error}，当前保留最近一次结果。</span></div>}
+
+      <section className="review-hero-grid">
+        <section className="review-metrics panel">
+          <div className="section-head"><div><span>情绪面</span><strong>涨跌停与连板</strong></div><em>{date}</em></div>
+          <div className="review-metric-grid">
+            {metricCards.map((card) => (
+              <div className="review-metric" key={card.label}>
+                <span>{card.label}</span>
+                <strong className={card.tone}>{card.value}</strong>
+                <small>{card.hint}</small>
+              </div>
+            ))}
+            {data?.breadth && (
+              <>
+                <div className="review-metric"><span>上涨家数</span><strong className="up">{data.breadth.up}</strong><small>全A 涨幅&gt;0</small></div>
+                <div className="review-metric"><span>下跌家数</span><strong className="down">{data.breadth.down}</strong><small>全A 涨幅&lt;0</small></div>
+                <div className="review-metric"><span>平盘家数</span><strong className="flat">{data.breadth.flat}</strong><small>涨幅为0</small></div>
+              </>
+            )}
+          </div>
+          {data?.indices.length ? (
+            <div className="review-indices">
+              {data.indices.map((idx) => (
+                <div className="review-index-chip" key={idx.code}>
+                  <span>{idx.name}</span>
+                  <strong>{number(idx.price)}</strong>
+                  <em className={tone(idx.change)}>{signed(idx.change)}</em>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {data?.turnover ? (
+            <div className="review-turnover">
+              <span>两市成交额</span>
+              <strong>{marketAmount(data.turnover.currentAmount)}</strong>
+              <em className={tone(data.turnover.deltaPercent)}>较上日同期 {data.turnover.deltaPercent >= 0 ? "放量" : "缩量"} {signed(data.turnover.deltaPercent)}</em>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="review-temperature panel">
+          <div className="section-head"><div><span>情绪温度</span><strong>周期定位</strong></div><em>规则估算</em></div>
+          <div className="review-gauge">
+            <div className="review-gauge-ring" style={{ background: `conic-gradient(${sentiment?.temperature.score ?? 0 >= 58 ? "var(--up)" : sentiment?.temperature.score ?? 0 >= 42 ? "var(--gold)" : "var(--down)"} ${(sentiment?.temperature.score ?? 0) * 3.6}deg, var(--panel-3) 0deg)` }}>
+              <div className="review-gauge-inner">
+                <strong>{sentiment?.temperature.label ?? "—"}</strong>
+                <span>{sentiment?.temperature.score ?? 0} / 100</span>
+              </div>
+            </div>
+            <ul className="review-signals">
+              {(sentiment?.temperature.signals ?? []).map((signal, index) => <li key={index}>{signal}</li>)}
+              {!sentiment?.temperature.signals.length && <li>暂无足够信号</li>}
+            </ul>
+          </div>
+          <p className="review-note">温度为按涨停/跌停/炸板率/连板高度的规则估算，仅供判断情绪阶段参考，非量化模型输出。</p>
+        </section>
+      </section>
+
+      {ladder.length > 0 && (
+        <section className="review-ladder panel">
+          <div className="section-head"><div><span>连板梯队</span><strong>涨停接力高度</strong></div><em>{ladder.length} 档</em></div>
+          <div className="review-ladder-list">
+            {ladder.map((level) => (
+              <div className="review-ladder-row" key={level.boards}>
+                <div className="review-ladder-level"><strong>{level.boards}板</strong><span>{level.count} 只</span></div>
+                <div className="review-ladder-stocks">
+                  {level.stocks.map((stock) => (
+                    <button type="button" key={stock.code} className="review-stock-chip" onClick={() => onPick(reviewStockToStock(stock))} title={`加入自选 · ${stock.name}`}>
+                      <strong>{stock.name}</strong>
+                      <small>{stock.industry || "—"}</small>
+                      <em className={tone(stock.change)}>{signed(stock.change)}</em>
+                      {stock.firstSealTime && <b>{stock.firstSealTime}</b>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section className="review-pools panel">
+        <div className="section-head">
+          <div><span>股池明细</span><strong>涨停 / 跌停 / 炸板</strong></div>
+          <div className="review-pool-tabs" role="tablist">
+            {([ ["up", `涨停 ${data?.limitUps.length ?? 0}`], ["down", `跌停 ${data?.limitDowns.length ?? 0}`], ["broken", `炸板 ${data?.broken.length ?? 0}`] ] as Array<["up" | "down" | "broken", string]>).map(([key, label]) => (
+              <button type="button" key={key} role="tab" aria-selected={poolTab === key} className={poolTab === key ? "active" : ""} onClick={() => setPoolTab(key)}>{label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="review-pool-columns" aria-hidden="true">
+          <span>排名</span><span>名称 / 代码</span><span>{poolTab === "broken" ? "打开次数" : "连板"}</span>
+          <span>首次封板</span><span>最后封板</span><span>封单</span><span>成交额</span><span>流通市值</span><span>换手率</span><span>所属行业</span>
+        </div>
+        <div className="review-pool-list">
+          {loading && !poolRows.length ? <LoadingRows count={10} /> : poolRows.map((stock, index) => (
+            <button type="button" className="review-pool-row" key={stock.code} onClick={() => onPick(reviewStockToStock(stock))} title={`加入自选 · ${stock.name}`}>
+              <span>{String(index + 1).padStart(3, "0")}</span>
+              <span className="review-pool-name"><strong>{stock.name}</strong><small>{stock.code}</small></span>
+              <span className={poolTab === "broken" ? (stock.brokenTimes ? "down" : "flat") : "up"}>{poolTab === "broken" ? `${stock.brokenTimes ?? 0}次` : `${stock.boards}板`}</span>
+              <span>{stock.firstSealTime || "—"}</span>
+              <span>{stock.lastSealTime || "—"}</span>
+              <span className={tone(stock.sealFund)}>{stock.sealFund === null ? "—" : amount(stock.sealFund)}</span>
+              <span>{amount(stock.amount)}</span>
+              <span>{marketAmount(stock.marketCapFlow)}</span>
+              <span>{signed(stock.turnover)}</span>
+              <span>{stock.industry || "—"}</span>
+            </button>
+          ))}
+          {!loading && !poolRows.length && <EmptyState title="暂无数据" detail="该类股池当日没有数据" />}
+        </div>
+      </section>
+
+      {data?.sectors && (data.sectors.risers.length > 0 || data.sectors.fallers.length > 0) && (
+        <section className="review-sectors panel">
+          <div className="section-head"><div><span>题材复盘</span><strong>板块涨跌前五</strong></div><em>主流方向</em></div>
+          <div className="sector-rank-grid review-sector-grid">
+            <div className="sector-rank-col">
+              <div className="rank-title up"><span>▲</span><strong>领涨板块</strong></div>
+              {data.sectors.risers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />)}
+            </div>
+            <div className="sector-rank-col">
+              <div className="rank-title down"><span>▼</span><strong>领跌板块</strong></div>
+              {data.sectors.fallers.map((board, index) => <SectorRankCardItem key={board.code} board={board} index={index} />)}
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section className="review-dragon panel">
+        <div className="section-head"><div><span>龙虎榜</span><strong>上榜个股与席位净额</strong></div><em>{dragonPublished ? `${dragonItems.length} 只` : "待发布"}</em></div>
+        {dragonPublished && dragonItems.length > 0 ? (
+          <>
+            <div className="review-dragon-columns" aria-hidden="true">
+              <span>排名</span><span>名称 / 代码</span><span>上榜原因</span><span>涨跌幅</span><span>净买入</span><span>买入额</span><span>卖出额</span><span>成交额</span><span>换手率</span>
+            </div>
+            <div className="review-dragon-list">
+              {dragonItems.map((item, index) => (
+                <button type="button" className="review-dragon-row" key={item.code} onClick={() => onPick(dragonStockToStock(item))} title={`加入自选 · ${item.name}`}>
+                  <span>{String(index + 1).padStart(3, "0")}</span>
+                  <span className="review-pool-name"><strong>{item.name}</strong><small>{item.code}</small></span>
+                  <span className="review-reason">{item.reason || "—"}</span>
+                  <span className={tone(item.change)}>{signed(item.change)}</span>
+                  <span className={tone(item.net)}>{item.net === null ? "—" : `${item.net > 0 ? "+" : ""}${amount(item.net)}`}</span>
+                  <span>{amount(item.buy)}</span>
+                  <span>{amount(item.sell)}</span>
+                  <span>{amount(item.amount)}</span>
+                  <span>{signed(item.turnover)}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="review-dragon-pending">
+            <strong>龙虎榜尚未发布</strong>
+            <p>{isLateEnough ? "交易所数据通常在 17:00–18:30 之间陆续公布，当前仍未取到，请稍后刷新。" : "龙虎榜数据通常于 17:00 后由交易所公布，届时本栏会自动补全。"}</p>
+            <button type="button" onClick={() => load(date)} disabled={loading}>{loading ? "查询中…" : "手动查询龙虎榜"}</button>
+          </div>
+        )}
+      </section>
+
+      <section className="review-notes panel">
+        <div className="section-head">
+          <div><span>个人复盘</span><strong>当日操作与次日策略</strong></div>
+          <em>{notesSavedAt ? `已保存 ${shortTime(notesSavedAt)}` : "自动保存到本地"}</em>
+        </div>
+        <div className="review-notes-grid">
+          <label className="review-note-item">
+            <span>① 当日操作记录</span>
+            <textarea value={notes.trades} onChange={(event) => updateNotes("trades", event.target.value)} rows={6} placeholder="每笔操作：买入价 / 卖出价 / 盈亏 / 理由…" />
+          </label>
+          <label className="review-note-item">
+            <span>② 错误归因与心理反思</span>
+            <div className="review-mistakes">
+              {MISTAKE_OPTIONS.map((option) => (
+                <button type="button" key={option} className={notes.mistakesChecked.includes(option) ? "active" : ""} onClick={() => toggleMistake(option)} aria-pressed={notes.mistakesChecked.includes(option)}>{option}</button>
+              ))}
+            </div>
+            <textarea value={notes.mistakes} onChange={(event) => updateNotes("mistakes", event.target.value)} rows={4} placeholder="补充说明：买点是否过高、是否选错方向、仓位/止损是否失控、有无情绪化操作…" />
+          </label>
+          <label className="review-note-item">
+            <span>③ 次日关注标的池</span>
+            <textarea value={notes.watchlist} onChange={(event) => updateNotes("watchlist", event.target.value)} rows={6} placeholder="每行一只：代码 名称 逻辑 买点区间（如 000001 平安银行 金融中军 回踩5日线低吸）" />
+          </label>
+          <label className="review-note-item">
+            <span>④ 次日策略 / 仓位 / 风险</span>
+            <textarea value={notes.plan} onChange={(event) => updateNotes("plan", event.target.value)} rows={6} placeholder="情绪预判、分歧转一致/一致转分歧、仓位计划、出现哪些信号需要警惕…" />
+          </label>
+        </div>
+      </section>
+    </main>
+  );
 }

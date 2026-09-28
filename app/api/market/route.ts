@@ -1616,6 +1616,274 @@ async function strongUnsealed() {
   return { items, meta: { ...metaFrom(...results), source: "东方财富 · 沪深主板" } };
 }
 
+// ===================== 每日复盘（超短线打板接力） =====================
+const PUSH2EX = "https://push2ex.eastmoney.com";
+
+function shanghaiClock(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || "";
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    hour: Number(get("hour")), minute: Number(get("minute")),
+    weekday: get("weekday"),
+  };
+}
+const isWeekend = (weekday: string) => weekday === "Sat" || weekday === "Sun";
+
+// 候选交易日列表（跳过周末）。从起始日向前回溯。
+function candidateTradingDays(startISO: string, lookback = 12): string[] {
+  const out: string[] = [];
+  const cursor = new Date(`${startISO}T00:00:00+08:00`);
+  const shanghaiDate = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
+  for (let i = 0; i < lookback * 2 + 6; i += 1) {
+    const weekday = cursor.toLocaleDateString("en-US", { weekday: "short", timeZone: "Asia/Shanghai" });
+    if (!isWeekend(weekday)) {
+      out.push(shanghaiDate(cursor));
+      if (out.length >= lookback) break;
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return out;
+}
+
+async function fetchTopicPool(type: "ZT" | "DT" | "ZB", compactDate: string) {
+  const endpoint = type === "ZT" ? "getTopicZTPool" : type === "DT" ? "getTopicDTPool" : "getTopicZBPool";
+  const sort = type === "ZB" ? "fbt:asc" : "fbt:asc";
+  const url = `${PUSH2EX}/${endpoint}?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=10000&sort=${sort}&date=${compactDate}`;
+  const result = await resilientJson(url, 180_000, { attempts: 2, timeoutMs: 4_000 });
+  const pool = result.value?.data?.pool;
+  return { rows: Array.isArray(pool) ? pool : [], result };
+}
+
+function sealTime(raw: unknown): string {
+  const text = String(raw ?? "");
+  if (/^\d{6}$/.test(text)) return `${text.slice(0, 2)}:${text.slice(2, 4)}`;
+  if (/^\d{4}$/.test(text)) return `${text.slice(0, 2)}:${text.slice(2, 4)}`;
+  if (/^\d{2}:\d{2}/.test(text)) return text.slice(0, 5);
+  return text;
+}
+
+type ReviewStock = {
+  code: string; name: string; price: number | null; change: number | null;
+  amount: number | null; marketCapFlow: number | null; turnover: number | null;
+  sealFund: number | null; firstSealTime: string; lastSealTime: string;
+  brokenTimes: number | null; boards: number; industry: string; amplitude: number | null;
+};
+
+function parseZTRow(item: Record<string, unknown>): ReviewStock {
+  const days = Number((item.zttj as Record<string, unknown> | undefined)?.days ?? 1);
+  return {
+    code: String(item.c ?? ""), name: String(item.n ?? ""), price: numeric(item.p),
+    change: numeric(item.zdp), amount: numeric(item.amount), marketCapFlow: numeric(item.ltsz),
+    turnover: numeric(item.hs), sealFund: numeric(item.fund), firstSealTime: sealTime(item.fbt),
+    lastSealTime: sealTime(item.lbt), brokenTimes: numeric(item.zbc),
+    boards: Number.isFinite(days) && days > 0 ? days : 1,
+    industry: String(item.hybk ?? ""), amplitude: null,
+  };
+}
+
+function parseZBRow(item: Record<string, unknown>): ReviewStock {
+  return {
+    code: String(item.c ?? ""), name: String(item.n ?? ""), price: numeric(item.p),
+    change: numeric(item.zdp), amount: numeric(item.amount), marketCapFlow: numeric(item.ltsz),
+    turnover: numeric(item.hs), sealFund: null, firstSealTime: sealTime(item.fbt), lastSealTime: "",
+    brokenTimes: numeric(item.zbc), boards: 1, industry: String(item.hybk ?? ""), amplitude: numeric(item.zf),
+  };
+}
+
+function sentimentTemperature(limitUp: number, limitDown: number, broken: number, maxBoards: number) {
+  const brokenRate = limitUp + broken > 0 ? (broken / (limitUp + broken)) * 100 : null;
+  let score = 50;
+  const signals: string[] = [];
+  if (limitUp >= 80) { score += 20; signals.push(`涨停 ${limitUp} 家，赚钱效应强`); }
+  else if (limitUp >= 50) { score += 12; signals.push(`涨停 ${limitUp} 家，情绪活跃`); }
+  else if (limitUp >= 30) { score += 5; signals.push(`涨停 ${limitUp} 家，情绪一般`); }
+  else if (limitUp <= 20) { score -= 15; signals.push(`涨停 ${limitUp} 家，情绪偏弱`); }
+  if (limitDown >= 30) { score -= 20; signals.push(`跌停 ${limitDown} 家，亏钱效应明显`); }
+  else if (limitDown >= 10) { score -= 10; signals.push(`跌停 ${limitDown} 家，情绪承压`); }
+  else if (limitDown <= 3) { score += 10; signals.push(`跌停 ${limitDown} 家，情绪稳定`); }
+  if (brokenRate !== null) {
+    if (brokenRate < 15) { score += 15; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板坚决`); }
+    else if (brokenRate < 25) { score += 8; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板健康`); }
+    else if (brokenRate >= 55) { score -= 25; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板失败率高`); }
+    else if (brokenRate >= 40) { score -= 15; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板分化`); }
+  }
+  if (maxBoards >= 6) { score += 10; signals.push(`最高 ${maxBoards} 连板，高度打开`); }
+  else if (maxBoards >= 4) { score += 5; signals.push(`最高 ${maxBoards} 连板，接力有序`); }
+  else if (maxBoards <= 2) { score -= 8; signals.push(`最高仅 ${maxBoards} 连板，高度受限`); }
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  let label = "分歧震荡";
+  if (score >= 75) label = "情绪高潮";
+  else if (score >= 58) label = "回暖活跃";
+  else if (score >= 42) label = "分歧震荡";
+  else if (score >= 25) label = "退潮降温";
+  else label = "情绪冰点";
+  return { score, label, signals, brokenRate };
+}
+
+const REVIEW_INDEX_SECIDS = ["1.000001", "0.399001", "0.399006", "1.000688", "0.899050"];
+const REVIEW_INDEX_NAMES: Record<string, string> = {
+  "1.000001": "上证指数", "0.399001": "深证成指", "0.399006": "创业板指", "1.000688": "科创50", "0.899050": "北证50",
+};
+async function reviewIndicesForDate(_date: string) {
+  // 指数取实时行情（单请求，避免并发限流）。非交易日/历史回看时返回最近交易日收盘，与默认复盘日一致。
+  const secids = REVIEW_INDEX_SECIDS.join(",");
+  const result = await resilientJson(
+    `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f12,f14&secids=${encodeURIComponent(secids)}`,
+    30_000, { attempts: 2, timeoutMs: 3_000 },
+  );
+  return (result.value?.data?.diff ?? []).map((item: Record<string, unknown>) => ({
+    code: String(item.f12 ?? ""),
+    name: REVIEW_INDEX_NAMES[`${numeric(item.f13)}.${item.f12}`] || REVIEW_INDEX_NAMES[`1.${item.f12}`] || String(item.f14 ?? ""),
+    price: numeric(item.f2),
+    change: numeric(item.f3),
+  })).filter((item: { code: string; name: string; price: number | null; change: number | null }) => item.name && item.price !== null);
+}
+
+const BREADTH_UNIVERSE = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
+async function reviewBreadth() {
+  let up = 0; let down = 0; let flat = 0; let total = 0;
+  for (let page = 1; page <= 80; page += 1) {
+    const result = await resilientJson(
+      `${EASTMONEY}/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(BREADTH_UNIVERSE)}&fields=f3`,
+      30_000, { attempts: 2, timeoutMs: 4_000 },
+    );
+    const rows = result.value?.data?.diff ?? [];
+    if (!rows.length) break;
+    for (const row of rows) {
+      const ch = numeric(row.f3);
+      if (ch === null) continue;
+      total += 1;
+      if (ch > 0) up += 1; else if (ch < 0) down += 1; else flat += 1;
+    }
+    if (rows.length < 100) break;
+  }
+  return { up, down, flat, total };
+}
+
+type DragonItem = {
+  code: string; name: string; reason: string; close: number | null; change: number | null;
+  net: number | null; buy: number | null; sell: number | null; total: number | null;
+  amount: number | null; turnover: number | null; freeMarketCap: number | null;
+};
+async function reviewDragon(date: string): Promise<{ published: boolean; items: DragonItem[] }> {
+  const filter = encodeURIComponent(`(TRADE_DATE>='${date}')(TRADE_DATE<='${date}')`);
+  const url = `${EASTMONEY_DATACENTER}?sortColumns=BILLBOARD_NET_AMT&sortTypes=-1&pageSize=80&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILS&columns=ALL&source=WEB&client=WEB&filter=${filter}`;
+  try {
+    const result = await resilientJson(url, 600_000, { attempts: 1, timeoutMs: 6_000 });
+    const data = result.value?.result?.data;
+    if (!Array.isArray(data) || data.length === 0) return { published: false, items: [] };
+    const items = data.map((row: Record<string, unknown>): DragonItem => ({
+      code: String(row.SECURITY_CODE ?? ""), name: String(row.SECURITY_NAME_ABBR ?? ""),
+      reason: String(row.EXPLAIN ?? ""), close: numeric(row.CLOSE_PRICE), change: numeric(row.CHANGE_RATE),
+      net: numeric(row.BILLBOARD_NET_AMT), buy: numeric(row.BILLBOARD_BUY_AMT),
+      sell: numeric(row.BILLBOARD_SEALE_AMT ?? row.BILLBOARD_SEAL_AMT), total: numeric(row.BILLBOARD_DEAL_AMT),
+      amount: numeric(row.ACCUM_AMOUNT), turnover: numeric(row.TURNOVERRATE), freeMarketCap: numeric(row.FREE_MARKET_CAP),
+    }));
+    return { published: true, items };
+  } catch {
+    return { published: false, items: [] };
+  }
+}
+
+async function review(dateParam?: string) {
+  const now = shanghaiClock();
+  // 解析目标日期：优先用入参，否则按 15:30 规则决定今日/昨日。
+  let target = dateParam || now.date;
+  if (!dateParam) {
+    const useToday = (now.hour * 60 + now.minute) >= 15 * 60 + 30 && !isWeekend(now.weekday);
+    if (!useToday) {
+      const cursor = new Date(`${now.date}T00:00:00+08:00`);
+      cursor.setDate(cursor.getDate() - 1);
+      target = cursor.toISOString().slice(0, 10);
+    }
+  }
+  const candidates = candidateTradingDays(target, 10);
+  let usedDate = candidates[0] || target;
+  let ztRows: ReviewStock[] = [];
+  let metaResult: { fetchedAt: number; mode: CacheMode } | null = null;
+  for (const day of candidates) {
+    const compact = day.replace(/-/g, "");
+    try {
+      const zt = await fetchTopicPool("ZT", compact);
+      if (zt.rows.length > 0) {
+        usedDate = day;
+        ztRows = zt.rows.map(parseZTRow);
+        metaResult = { fetchedAt: zt.result.fetchedAt, mode: zt.result.mode };
+        break;
+      }
+    } catch { /* 继续尝试前一交易日 */ }
+  }
+  const compact = usedDate.replace(/-/g, "");
+  const [dt, zb] = await Promise.all([
+    fetchTopicPool("DT", compact).then((res) => res.rows.map(parseZTRow)).catch(() => [] as ReviewStock[]),
+    fetchTopicPool("ZB", compact).then((res) => res.rows.map(parseZBRow)).catch(() => [] as ReviewStock[]),
+  ]);
+
+  const limitUpCount = ztRows.length;
+  const limitDownCount = dt.length;
+  const brokenCount = zb.length;
+  const maxBoards = ztRows.reduce((max, item) => Math.max(max, item.boards), 0);
+  const temperature = sentimentTemperature(limitUpCount, limitDownCount, brokenCount, maxBoards);
+
+  const ladderMap = new Map<number, ReviewStock[]>();
+  ztRows.forEach((row) => {
+    const list = ladderMap.get(row.boards) ?? [];
+    list.push(row);
+    ladderMap.set(row.boards, list);
+  });
+  const ladder = Array.from(ladderMap.entries())
+    .sort((a, b) => b[0] - a[0])
+    .map(([boards, stocks]) => ({ boards, count: stocks.length, stocks }));
+
+  const useToday = usedDate === now.date;
+  const status = useToday && (now.hour * 60 + now.minute) < 15 * 60 + 30 ? "pending" : "ready";
+
+  // 指数按复盘日取日K收盘价（今日则为当日最新价）；成交额与涨跌家数仅在复盘日为当日时取实时值。
+  const [indicesRes, turnoverRes, breadthRes, sectorsRes] = await Promise.allSettled([
+    reviewIndicesForDate(usedDate),
+    useToday ? marketTurnover() : Promise.reject(new Error("非当日复盘不提供实时成交额")),
+    useToday ? reviewBreadth() : Promise.reject(new Error("非当日复盘不提供涨跌家数")),
+    sectorRanking(),
+  ]);
+  const dragon = await reviewDragon(usedDate);
+
+  const indices = indicesRes.status === "fulfilled" ? indicesRes.value : [];
+  const turnover = turnoverRes.status === "fulfilled" ? turnoverRes.value : null;
+  const breadth = breadthRes.status === "fulfilled" ? breadthRes.value : null;
+  const sectors = sectorsRes.status === "fulfilled"
+    ? { risers: sectorsRes.value.risers, fallers: sectorsRes.value.fallers }
+    : null;
+
+  const auxResults: Array<{ fetchedAt: number; mode: CacheMode }> = [];
+  if (metaResult) auxResults.push(metaResult);
+  if (indicesRes.status === "fulfilled") auxResults.push({ fetchedAt: Date.now(), mode: "live" });
+
+  return {
+    date: usedDate,
+    status,
+    indices,
+    turnover,
+    breadth,
+    sentiment: {
+      limitUpCount, limitDownCount, brokenCount,
+      brokenRate: temperature.brokenRate, maxBoards, ladder,
+      temperature: { score: temperature.score, label: temperature.label, signals: temperature.signals },
+    },
+    limitUps: ztRows,
+    limitDowns: dt,
+    broken: zb,
+    sectors,
+    dragon,
+    meta: auxResults.length
+      ? { ...metaFrom(...auxResults), source: "东方财富 · 涨跌停池 / 板块 / 龙虎榜" }
+      : { mode: "stale" as CacheMode, updatedAt: 0, source: "复盘数据暂不可用" },
+  };
+}
+
 async function search(keyword: string) {
   const normalized = keyword.trim().slice(0, 30);
   if (!normalized) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "腾讯搜索" } };
@@ -1654,6 +1922,7 @@ export async function GET(request: Request) {
     if (action === "sector-ranking") return json(await sectorRanking());
     if (action === "rankings") return json(await rankings(url.searchParams.get("sort") ?? "rise", url.searchParams.get("board") === "main"));
     if (action === "strong-unsealed") return json(await strongUnsealed());
+    if (action === "review") return json(await review(url.searchParams.get("date") ?? undefined));
     if (action === "search") return json(await search(url.searchParams.get("q") ?? ""));
     return json({ error: "未知数据请求" }, 400);
   } catch (error) {
