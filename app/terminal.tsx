@@ -59,6 +59,8 @@ type ReviewStock = {
 };
 type ReviewLadder = { boards: number; count: number; stocks: ReviewStock[] };
 type ReviewTemperature = { score: number; label: string; signals: string[] };
+type ThemeGroup = { theme: string; count: number; stocks: Array<{ code: string; name: string; change: number | null; boards: number }> };
+type PositionAdvice = { position: string; cash: string; advice: string };
 type DragonItem = {
   code: string; name: string; reason: string; close: number | null; change: number | null;
   net: number | null; buy: number | null; sell: number | null; total: number | null;
@@ -79,6 +81,9 @@ type ReviewData = {
   broken: ReviewStock[];
   sectors: { risers: SectorRankCard[]; fallers: SectorRankCard[] } | null;
   dragon: { published: boolean; items: DragonItem[] } | null;
+  themeAnalysis: ThemeGroup[];
+  marketStructure: string[];
+  positionAdvice: PositionAdvice | null;
   meta: MarketMeta;
 };
 
@@ -2888,6 +2893,87 @@ function ReviewPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
           </div>
         )}
       </section>
+
+      {data?.themeAnalysis?.length ? (
+        <section className="review-themes panel">
+          <div className="section-head"><div><span>涨停归因</span><strong>按题材分类</strong></div><em>{data.themeAnalysis.length} 类</em></div>
+          <div className="review-theme-list">
+            {data.themeAnalysis.slice(0, 12).map((group, index) => (
+              <div className="review-theme-row" key={group.theme}>
+                <div className="review-theme-rank">{index + 1}</div>
+                <div className="review-theme-info">
+                  <div className="review-theme-head">
+                    <strong>{group.theme}</strong>
+                    <span className="review-theme-count">{group.count} 只</span>
+                  </div>
+                  <div className="review-theme-stocks">
+                    {group.stocks.map((stock) => (
+                      <button type="button" key={stock.code} className="review-theme-chip" onClick={() => onPick({ code: stock.code, market: /^6/.test(stock.code) ? 1 : 0, name: stock.name })} title={`加入自选 · ${stock.name}`}>
+                        <strong>{stock.name}</strong>
+                        {stock.boards > 1 && <b>{stock.boards}板</b>}
+                        <em className={tone(stock.change)}>{signed(stock.change)}</em>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="review-structure panel">
+        <div className="section-head"><div><span>市场结构</span><strong>今日特征摘要</strong></div><em>自动生成</em></div>
+        <ul className="review-structure-list">
+          {(data?.marketStructure ?? []).map((line, index) => <li key={index}>{line}</li>)}
+          {!data?.marketStructure.length && <li>暂无足够数据生成市场结构摘要</li>}
+        </ul>
+      </section>
+
+      {data?.positionAdvice && (
+        <section className="review-position panel">
+          <div className="section-head"><div><span>持仓建议</span><strong>基于情绪温度的仓位参考</strong></div><em>{sentiment?.temperature.label ?? "—"}</em></div>
+          <div className="review-position-body">
+            <div className="review-position-bars">
+              <div className="review-position-bar">
+                <span>持仓</span>
+                <div className="review-bar-track"><div className="review-bar-fill up" style={{ width: data.positionAdvice.position.split("-")[0] }} /></div>
+                <strong>{data.positionAdvice.position}</strong>
+              </div>
+              <div className="review-position-bar">
+                <span>现金</span>
+                <div className="review-bar-track"><div className="review-bar-fill flat" style={{ width: data.positionAdvice.cash.split("-")[0] }} /></div>
+                <strong>{data.positionAdvice.cash}</strong>
+              </div>
+            </div>
+            <p className="review-position-advice">{data.positionAdvice.advice}</p>
+          </div>
+        </section>
+      )}
+
+      {data?.sectors && data.sectors.risers.length > 0 && (
+        <section className="review-flow panel">
+          <div className="section-head"><div><span>资金流向</span><strong>板块净流入/流出</strong></div><em>领涨前五</em></div>
+          <div className="review-flow-list">
+            {data.sectors.risers.map((board) => {
+              const flow = board.inflow ?? 0;
+              const yi = Math.abs(flow) / 1e8;
+              const isOut = flow < 0;
+              const maxFlow = Math.max(...data.sectors!.risers.map((b) => Math.abs(b.inflow ?? 0)), 1);
+              const pct = Math.min(100, (Math.abs(flow) / maxFlow) * 100);
+              return (
+                <div className="review-flow-row" key={board.code}>
+                  <span className="review-flow-name">{board.name}</span>
+                  <div className="review-flow-bar-track">
+                    <div className={`review-flow-bar-fill ${isOut ? "down" : "up"}`} style={{ width: `${pct}%` }} />
+                  </div>
+                  <em className={isOut ? "down" : "up"}>{isOut ? "-" : "+"}{yi.toFixed(1)}亿</em>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <section className="review-notes panel">
         <div className="section-head">

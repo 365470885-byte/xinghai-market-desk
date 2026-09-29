@@ -1724,6 +1724,81 @@ function sentimentTemperature(limitUp: number, limitDown: number, broken: number
   return { score, label, signals, brokenRate };
 }
 
+type ThemeGroup = { theme: string; count: number; stocks: Array<{ code: string; name: string; change: number | null; boards: number }> };
+function buildThemeAnalysis(ztRows: ReviewStock[]): ThemeGroup[] {
+  const map = new Map<string, ReviewStock[]>();
+  for (const row of ztRows) {
+    const theme = (row.industry || "未分类").trim();
+    const list = map.get(theme) ?? [];
+    list.push(row);
+    map.set(theme, list);
+  }
+  return Array.from(map.entries())
+    .map(([theme, stocks]) => ({
+      theme,
+      count: stocks.length,
+      stocks: stocks
+        .sort((a, b) => b.boards - a.boards || (b.amount ?? 0) - (a.amount ?? 0))
+        .slice(0, 5)
+        .map((s) => ({ code: s.code, name: s.name, change: s.change, boards: s.boards })),
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function buildMarketStructure(
+  zt: number, dt: number, broken: number, maxBoards: number,
+  breadth: { up: number; down: number; total: number } | null,
+  turnover: { currentAmount: number; deltaPercent: number } | null,
+  sectors: { risers: Array<{ name: string; change: number | null }> } | null,
+): string[] {
+  const lines: string[] = [];
+  // 1. 涨跌停结构
+  if (zt >= 80) lines.push(`涨停 ${zt} 家，赚钱效应强，资金进攻意愿高`);
+  else if (zt >= 50) lines.push(`涨停 ${zt} 家，情绪活跃，可参与接力`);
+  else if (zt >= 30) lines.push(`涨停 ${zt} 家，情绪一般，需精选标的`);
+  else lines.push(`涨停仅 ${zt} 家，情绪偏弱，观望为主`);
+  if (dt >= 30) lines.push(`跌停 ${dt} 家，亏钱效应明显，高位股需警惕`);
+  else if (dt >= 10) lines.push(`跌停 ${dt} 家，情绪承压`);
+  else if (dt <= 3 && zt > 0) lines.push(`跌停仅 ${dt} 家，情绪稳定`);
+  // 2. 炸板率
+  const brokenRate = zt + broken > 0 ? (broken / (zt + broken)) * 100 : 0;
+  if (brokenRate >= 40) lines.push(`炸板率 ${brokenRate.toFixed(0)}%，封板失败率高，打板需谨慎`);
+  else if (brokenRate >= 25) lines.push(`炸板率 ${brokenRate.toFixed(0)}%，封板分化`);
+  else if (zt > 0) lines.push(`炸板率 ${brokenRate.toFixed(0)}%，封板坚决`);
+  // 3. 连板高度
+  if (maxBoards >= 6) lines.push(`最高 ${maxBoards} 连板，空间打开，接力情绪高涨`);
+  else if (maxBoards >= 4) lines.push(`最高 ${maxBoards} 连板，接力有序`);
+  else if (maxBoards <= 2 && zt > 0) lines.push(`最高仅 ${maxBoards} 连板，高度受限，市场缺乏主线龙头`);
+  // 4. 涨跌家数
+  if (breadth) {
+    const ratio = breadth.total > 0 ? breadth.up / breadth.total : 0;
+    if (ratio >= 0.7) lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，普涨格局`);
+    else if (ratio >= 0.5) lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，涨多跌少`);
+    else if (ratio <= 0.3) lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，普跌格局`);
+    else lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，涨跌各半`);
+  }
+  // 5. 成交额
+  if (turnover) {
+    const yi = turnover.currentAmount / 1e8;
+    if (turnover.deltaPercent >= 0) lines.push(`成交 ${yi.toFixed(0)} 亿，放量 ${turnover.deltaPercent.toFixed(1)}%`);
+    else lines.push(`成交 ${yi.toFixed(0)} 亿，缩量 ${Math.abs(turnover.deltaPercent).toFixed(1)}%`);
+  }
+  // 6. 主流方向
+  if (sectors?.risers?.length) {
+    const top3 = sectors.risers.slice(0, 3).map((s) => s.name).join("、");
+    lines.push(`主流方向：${top3}`);
+  }
+  return lines;
+}
+
+function buildPositionAdvice(score: number): { position: string; cash: string; advice: string } {
+  if (score >= 75) return { position: "60-80%", cash: "20-40%", advice: "情绪高潮，可适度加仓接力主流题材" };
+  if (score >= 58) return { position: "40-60%", cash: "40-60%", advice: "回暖活跃，半仓参与，聚焦连板梯队" };
+  if (score >= 42) return { position: "20-40%", cash: "60-80%", advice: "分歧震荡，轻仓试错，等待方向明确" };
+  if (score >= 25) return { position: "10-20%", cash: "80-90%", advice: "退潮降温，减仓为主，只做首板不追高" };
+  return { position: "0-10%", cash: "90-100%", advice: "情绪冰点，空仓观望为主，等待回暖信号" };
+}
+
 const REVIEW_INDEX_SECIDS = ["1.000001", "0.399001", "0.399006", "1.000688", "0.899050"];
 const REVIEW_INDEX_NAMES: Record<string, string> = {
   "1.000001": "上证指数", "0.399001": "深证成指", "0.399006": "创业板指", "1.000688": "科创50", "0.899050": "北证50",
@@ -1862,6 +1937,12 @@ async function review(dateParam?: string) {
   if (metaResult) auxResults.push(metaResult);
   if (indicesRes.status === "fulfilled") auxResults.push({ fetchedAt: Date.now(), mode: "live" });
 
+  const themeAnalysis = buildThemeAnalysis(ztRows);
+  const marketStructure = buildMarketStructure(
+    limitUpCount, limitDownCount, brokenCount, maxBoards, breadth, turnover, sectors,
+  );
+  const positionAdvice = buildPositionAdvice(temperature.score);
+
   return {
     date: usedDate,
     status,
@@ -1878,6 +1959,9 @@ async function review(dateParam?: string) {
     broken: zb,
     sectors,
     dragon,
+    themeAnalysis,
+    marketStructure,
+    positionAdvice,
     meta: auxResults.length
       ? { ...metaFrom(...auxResults), source: "东方财富 · 涨跌停池 / 板块 / 龙虎榜" }
       : { mode: "stale" as CacheMode, updatedAt: 0, source: "复盘数据暂不可用" },
