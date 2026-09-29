@@ -1,6 +1,6 @@
 export const runtime = "nodejs";
 export const preferredRegion = "hkg1";
-export const maxDuration = 60;
+export const maxDuration = 15;
 
 type CacheMode = "live" | "cache" | "stale";
 
@@ -1654,7 +1654,7 @@ async function fetchTopicPool(type: "ZT" | "DT" | "ZB", compactDate: string) {
   const endpoint = type === "ZT" ? "getTopicZTPool" : type === "DT" ? "getTopicDTPool" : "getTopicZBPool";
   const sort = type === "ZB" ? "fbt:asc" : "fbt:asc";
   const url = `${PUSH2EX}/${endpoint}?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=10000&sort=${sort}&date=${compactDate}`;
-  const result = await resilientJson(url, 180_000, { attempts: 2, timeoutMs: 8_000 });
+  const result = await resilientJson(url, 180_000, { attempts: 1, timeoutMs: 5_000 });
   const pool = result.value?.data?.pool;
   return { rows: Array.isArray(pool) ? pool : [], result };
 }
@@ -1809,7 +1809,7 @@ async function reviewIndicesForDate(_date: string) {
   const secids = REVIEW_INDEX_SECIDS.join(",");
   const result = await resilientJson(
     `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f12,f14&secids=${encodeURIComponent(secids)}`,
-    30_000, { attempts: 2, timeoutMs: 8_000 },
+    30_000, { attempts: 1, timeoutMs: 5_000 },
   );
   return (result.value?.data?.diff ?? []).map((item: Record<string, unknown>) => ({
     code: String(item.f12 ?? ""),
@@ -1822,10 +1822,10 @@ async function reviewIndicesForDate(_date: string) {
 const BREADTH_UNIVERSE = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
 async function reviewBreadth() {
   let up = 0; let down = 0; let flat = 0; let total = 0;
-  for (let page = 1; page <= 15; page += 1) {
+  for (let page = 1; page <= 10; page += 1) {
     const result = await resilientJson(
       `${EASTMONEY}/clist/get?pn=${page}&pz=500&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(BREADTH_UNIVERSE)}&fields=f3`,
-      30_000, { attempts: 1, timeoutMs: 6_000 },
+      30_000, { attempts: 1, timeoutMs: 4_000 },
     );
     const rows = result.value?.data?.diff ?? [];
     if (!rows.length) break;
@@ -1849,7 +1849,7 @@ async function reviewDragon(date: string): Promise<{ published: boolean; items: 
   const filter = encodeURIComponent(`(TRADE_DATE>='${date}')(TRADE_DATE<='${date}')`);
   const url = `${EASTMONEY_DATACENTER}?sortColumns=BILLBOARD_NET_AMT&sortTypes=-1&pageSize=80&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILS&columns=ALL&source=WEB&client=WEB&filter=${filter}`;
   try {
-    const result = await resilientJson(url, 600_000, { attempts: 1, timeoutMs: 6_000 });
+    const result = await resilientJson(url, 600_000, { attempts: 1, timeoutMs: 5_000 });
     const data = result.value?.result?.data;
     if (!Array.isArray(data) || data.length === 0) return { published: false, items: [] };
     const items = data.map((row: Record<string, unknown>): DragonItem => ({
@@ -1923,10 +1923,10 @@ async function review(dateParam?: string) {
     Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
   const [indicesRes, turnoverRes, breadthRes, sectorsRes, dragonRes] = await Promise.allSettled([
     reviewIndicesForDate(usedDate),
-    useToday ? withTimeout(marketTurnover(), 10_000) : Promise.reject(new Error("非当日复盘不提供实时成交额")),
-    useToday ? withTimeout(reviewBreadth(), 15_000) : Promise.reject(new Error("非当日复盘不提供涨跌家数")),
+    useToday ? withTimeout(marketTurnover(), 8_000) : Promise.reject(new Error("非当日复盘不提供实时成交额")),
+    useToday ? withTimeout(reviewBreadth(), 10_000) : Promise.reject(new Error("非当日复盘不提供涨跌家数")),
     sectorRanking(),
-    withTimeout(reviewDragon(usedDate), 15_000),
+    withTimeout(reviewDragon(usedDate), 10_000),
   ]);
 
   const indices = indicesRes.status === "fulfilled" ? indicesRes.value : [];

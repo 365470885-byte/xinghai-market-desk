@@ -288,8 +288,10 @@ async function fetchJson<T>(url: string, timeout = 12_000, retries = 0): Promise
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
       const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "数据服务暂不可用");
+      const text = await response.text();
+      let body: unknown;
+      try { body = JSON.parse(text); } catch { throw new Error(response.ok ? "上游返回非JSON" : `数据服务返回 ${response.status}`); }
+      if (!response.ok) throw new Error((body as { error?: string }).error || "数据服务暂不可用");
       return body as T;
     } catch (error) {
       lastError = error;
