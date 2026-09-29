@@ -2597,6 +2597,305 @@ function formatWeekday(iso: string): string {
 type ReviewNotes = { trades: string; mistakes: string; watchlist: string; plan: string; mistakesChecked: string[] };
 const emptyNotes: ReviewNotes = { trades: "", mistakes: "", watchlist: "", plan: "", mistakesChecked: [] };
 
+// ===================== 复盘客户端直连（绕过 Vercel 限流） =====================
+const REVIEW_DIRECT_INDEX_NAMES: Record<string, string> = {
+  "1.000001": "上证指数", "0.399001": "深证成指", "0.399006": "创业板指", "1.000688": "科创50", "0.899050": "北证50",
+};
+
+function reviewSealTime(raw: unknown): string {
+  const text = String(raw ?? "");
+  if (/^\d{6}$/.test(text)) return `${text.slice(0, 2)}:${text.slice(2, 4)}`;
+  if (/^\d{4}$/.test(text)) return `${text.slice(0, 2)}:${text.slice(2, 4)}`;
+  if (/^\d{2}:\d{2}/.test(text)) return text.slice(0, 5);
+  return text;
+}
+
+function parseReviewZTRow(item: Record<string, unknown>): ReviewStock {
+  const days = Number((item.zttj as Record<string, unknown> | undefined)?.days ?? 1);
+  return {
+    code: String(item.c ?? ""), name: String(item.n ?? ""), price: finiteNumber(item.p),
+    change: finiteNumber(item.zdp), amount: finiteNumber(item.amount), marketCapFlow: finiteNumber(item.ltsz),
+    turnover: finiteNumber(item.hs), sealFund: finiteNumber(item.fund), firstSealTime: reviewSealTime(item.fbt),
+    lastSealTime: reviewSealTime(item.lbt), brokenTimes: finiteNumber(item.zbc),
+    boards: Number.isFinite(days) && days > 0 ? days : 1,
+    industry: String(item.hybk ?? ""), amplitude: null,
+  };
+}
+
+function parseReviewZBRow(item: Record<string, unknown>): ReviewStock {
+  return {
+    code: String(item.c ?? ""), name: String(item.n ?? ""), price: finiteNumber(item.p),
+    change: finiteNumber(item.zdp), amount: finiteNumber(item.amount), marketCapFlow: finiteNumber(item.ltsz),
+    turnover: finiteNumber(item.hs), sealFund: null, firstSealTime: reviewSealTime(item.fbt), lastSealTime: "",
+    brokenTimes: finiteNumber(item.zbc), boards: 1, industry: String(item.hybk ?? ""), amplitude: finiteNumber(item.zf),
+  };
+}
+
+function reviewSentimentTemperature(limitUp: number, limitDown: number, broken: number, maxBoards: number) {
+  const brokenRate = limitUp + broken > 0 ? (broken / (limitUp + broken)) * 100 : null;
+  let score = 50;
+  const signals: string[] = [];
+  if (limitUp >= 80) { score += 20; signals.push(`涨停 ${limitUp} 家，赚钱效应强`); }
+  else if (limitUp >= 50) { score += 12; signals.push(`涨停 ${limitUp} 家，情绪活跃`); }
+  else if (limitUp >= 30) { score += 5; signals.push(`涨停 ${limitUp} 家，情绪一般`); }
+  else if (limitUp <= 20) { score -= 15; signals.push(`涨停 ${limitUp} 家，情绪偏弱`); }
+  if (limitDown >= 30) { score -= 20; signals.push(`跌停 ${limitDown} 家，亏钱效应明显`); }
+  else if (limitDown >= 10) { score -= 10; signals.push(`跌停 ${limitDown} 家，情绪承压`); }
+  else if (limitDown <= 3) { score += 10; signals.push(`跌停 ${limitDown} 家，情绪稳定`); }
+  if (brokenRate !== null) {
+    if (brokenRate < 15) { score += 15; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板坚决`); }
+    else if (brokenRate < 25) { score += 8; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板健康`); }
+    else if (brokenRate >= 55) { score -= 25; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板失败率高`); }
+    else if (brokenRate >= 40) { score -= 15; signals.push(`炸板率 ${brokenRate.toFixed(1)}%，封板分化`); }
+  }
+  if (maxBoards >= 6) { score += 10; signals.push(`最高 ${maxBoards} 连板，高度打开`); }
+  else if (maxBoards >= 4) { score += 5; signals.push(`最高 ${maxBoards} 连板，接力有序`); }
+  else if (maxBoards <= 2) { score -= 8; signals.push(`最高仅 ${maxBoards} 连板，高度受限`); }
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  let label = "分歧震荡";
+  if (score >= 75) label = "情绪高潮";
+  else if (score >= 58) label = "回暖活跃";
+  else if (score >= 42) label = "分歧震荡";
+  else if (score >= 25) label = "退潮降温";
+  else label = "情绪冰点";
+  return { score, label, signals, brokenRate };
+}
+
+function reviewBuildThemeAnalysis(ztRows: ReviewStock[]): ThemeGroup[] {
+  const map = new Map<string, ReviewStock[]>();
+  for (const row of ztRows) {
+    const theme = (row.industry || "未分类").trim();
+    const list = map.get(theme) ?? [];
+    list.push(row);
+    map.set(theme, list);
+  }
+  return Array.from(map.entries())
+    .map(([theme, stocks]) => ({
+      theme,
+      count: stocks.length,
+      stocks: stocks
+        .sort((a, b) => b.boards - a.boards || (b.amount ?? 0) - (a.amount ?? 0))
+        .slice(0, 5)
+        .map((s) => ({ code: s.code, name: s.name, change: s.change, boards: s.boards })),
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function reviewBuildMarketStructure(
+  zt: number, dt: number, broken: number, maxBoards: number,
+  breadth: { up: number; down: number; total: number } | null,
+  turnover: { currentAmount: number; deltaPercent: number } | null,
+  sectors: { risers: Array<{ name: string; change: number | null }> } | null,
+): string[] {
+  const lines: string[] = [];
+  if (zt >= 80) lines.push(`涨停 ${zt} 家，赚钱效应强，资金进攻意愿高`);
+  else if (zt >= 50) lines.push(`涨停 ${zt} 家，情绪活跃，可参与接力`);
+  else if (zt >= 30) lines.push(`涨停 ${zt} 家，情绪一般，需精选标的`);
+  else lines.push(`涨停仅 ${zt} 家，情绪偏弱，观望为主`);
+  if (dt >= 30) lines.push(`跌停 ${dt} 家，亏钱效应明显，高位股需警惕`);
+  else if (dt >= 10) lines.push(`跌停 ${dt} 家，情绪承压`);
+  else if (dt <= 3 && zt > 0) lines.push(`跌停仅 ${dt} 家，情绪稳定`);
+  const brokenRate = zt + broken > 0 ? (broken / (zt + broken)) * 100 : 0;
+  if (brokenRate >= 40) lines.push(`炸板率 ${brokenRate.toFixed(0)}%，封板失败率高，打板需谨慎`);
+  else if (brokenRate >= 25) lines.push(`炸板率 ${brokenRate.toFixed(0)}%，封板分化`);
+  else if (zt > 0) lines.push(`炸板率 ${brokenRate.toFixed(0)}%，封板坚决`);
+  if (maxBoards >= 6) lines.push(`最高 ${maxBoards} 连板，空间打开，接力情绪高涨`);
+  else if (maxBoards >= 4) lines.push(`最高 ${maxBoards} 连板，接力有序`);
+  else if (maxBoards <= 2 && zt > 0) lines.push(`最高仅 ${maxBoards} 连板，高度受限，市场缺乏主线龙头`);
+  if (breadth) {
+    const ratio = breadth.total > 0 ? breadth.up / breadth.total : 0;
+    if (ratio >= 0.7) lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，普涨格局`);
+    else if (ratio >= 0.5) lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，涨多跌少`);
+    else if (ratio <= 0.3) lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，普跌格局`);
+    else lines.push(`上涨 ${breadth.up} 家 / 下跌 ${breadth.down} 家，涨跌各半`);
+  }
+  if (turnover) {
+    const yi = turnover.currentAmount / 1e8;
+    if (turnover.deltaPercent >= 0) lines.push(`成交 ${yi.toFixed(0)} 亿，放量 ${turnover.deltaPercent.toFixed(1)}%`);
+    else lines.push(`成交 ${yi.toFixed(0)} 亿，缩量 ${Math.abs(turnover.deltaPercent).toFixed(1)}%`);
+  }
+  if (sectors?.risers?.length) {
+    const top3 = sectors.risers.slice(0, 3).map((s) => s.name).join("、");
+    lines.push(`主流方向：${top3}`);
+  }
+  return lines;
+}
+
+function reviewBuildPositionAdvice(score: number): PositionAdvice {
+  if (score >= 75) return { position: "60-80%", cash: "20-40%", advice: "情绪高潮，可适度加仓接力主流题材" };
+  if (score >= 58) return { position: "40-60%", cash: "40-60%", advice: "回暖活跃，半仓参与，聚焦连板梯队" };
+  if (score >= 42) return { position: "20-40%", cash: "60-80%", advice: "分歧震荡，轻仓试错，等待方向明确" };
+  if (score >= 25) return { position: "10-20%", cash: "80-90%", advice: "退潮降温，减仓为主，只做首板不追高" };
+  return { position: "0-10%", cash: "90-100%", advice: "情绪冰点，空仓观望为主，等待回暖信号" };
+}
+
+async function fetchReviewDirectJson<T>(url: string, timeoutMs = 8_000): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
+    if (!response.ok) throw new Error(`上游返回 ${response.status}`);
+    return await response.json() as T;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function reviewCandidateTradingDays(startISO: string, lookback = 3): string[] {
+  const out: string[] = [];
+  const cursor = new Date(`${startISO}T00:00:00+08:00`);
+  for (let i = 0; i < lookback * 2 + 4; i += 1) {
+    const weekday = cursor.toLocaleDateString("en-US", { weekday: "short", timeZone: "Asia/Shanghai" });
+    if (weekday !== "Sat" && weekday !== "Sun") {
+      out.push(cursor.toISOString().slice(0, 10));
+      if (out.length >= lookback) break;
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return out;
+}
+
+// 服务端 /api/market?action=review 在 Vercel 香港出口被东财限流时，所有数据返回空（zt=0 等）。
+// 此函数直接从浏览器请求东方财富 API，绕过 Vercel，用于在服务端返回空数据时降级取数。
+async function fetchReviewDirect(dateParam?: string): Promise<ReviewData> {
+  // 1. 日期解析（客户端上海时区）
+  const now = shanghaiMarketClock();
+  let target: string;
+  if (dateParam) {
+    target = dateParam;
+  } else {
+    const isWeekendDay = now.weekday === "Sat" || now.weekday === "Sun";
+    const beforeClose = now.minutes < 15 * 60 + 30;
+    if (isWeekendDay || beforeClose) {
+      // 回退到上一个交易日（跳过周末）
+      const cursor = new Date(`${now.date}T00:00:00+08:00`);
+      cursor.setDate(cursor.getDate() - 1);
+      let resolved = now.date;
+      for (let i = 0; i < 10; i += 1) {
+        const wd = cursor.toLocaleDateString("en-US", { weekday: "short", timeZone: "Asia/Shanghai" });
+        if (wd !== "Sat" && wd !== "Sun") { resolved = cursor.toISOString().slice(0, 10); break; }
+        cursor.setDate(cursor.getDate() - 1);
+      }
+      target = resolved;
+    } else {
+      target = now.date;
+    }
+  }
+
+  // 候选交易日（跳过周末），逐日尝试直到涨停池有数据（兼容节假日）
+  const candidates = reviewCandidateTradingDays(target, 3);
+  let usedDate = target;
+  let ztRows: ReviewStock[] = [];
+  let dtRows: ReviewStock[] = [];
+  let zbRows: ReviewStock[] = [];
+  let indices: Array<{ code: string; name: string; price: number | null; change: number | null }> = [];
+  let sectors: { risers: SectorRankCard[]; fallers: SectorRankCard[] } | null = null;
+  let dragon: { published: boolean; items: DragonItem[] } = { published: false, items: [] };
+
+  for (const day of candidates) {
+    const compact = day.replace(/-/g, "");
+    const ztUrl = `https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=10000&sort=fbt:asc&date=${compact}`;
+    try {
+      const ztJson = await fetchReviewDirectJson<{ data?: { pool?: Array<Record<string, unknown>> } }>(ztUrl);
+      const pool = ztJson.data?.pool ?? [];
+      if (pool.length === 0) continue; // 节假日无数据，尝试前一交易日
+      usedDate = day;
+      ztRows = pool.map(parseReviewZTRow);
+
+      // 并发拉取 DT/ZB/指数/板块/龙虎榜
+      const dtUrl = `https://push2ex.eastmoney.com/getTopicDTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=10000&sort=fbt:asc&date=${compact}`;
+      const zbUrl = `https://push2ex.eastmoney.com/getTopicZBPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=10000&sort=fbt:asc&date=${compact}`;
+      const indicesUrl = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f12,f14&secids=1.000001,0.399001,0.399006,1.000688,0.899050`;
+      const dragonFilter = encodeURIComponent(`(TRADE_DATE>='${day}')(TRADE_DATE<='${day}')`);
+      const dragonUrl = `https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=BILLBOARD_NET_AMT&sortTypes=-1&pageSize=80&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILS&columns=ALL&source=WEB&client=WEB&filter=${dragonFilter}`;
+
+      const [dtRes, zbRes, indicesRes, sectorsRes, dragonRes] = await Promise.allSettled([
+        fetchReviewDirectJson<{ data?: { pool?: Array<Record<string, unknown>> } }>(dtUrl),
+        fetchReviewDirectJson<{ data?: { pool?: Array<Record<string, unknown>> } }>(zbUrl),
+        fetchReviewDirectJson<{ data?: { diff?: Array<Record<string, unknown>> } }>(indicesUrl),
+        fetchDirectSectorRanking(),
+        fetchReviewDirectJson<{ result?: { data?: Array<Record<string, unknown>> } }>(dragonUrl),
+      ]);
+
+      dtRows = dtRes.status === "fulfilled" ? (dtRes.value.data?.pool ?? []).map(parseReviewZTRow) : [];
+      zbRows = zbRes.status === "fulfilled" ? (zbRes.value.data?.pool ?? []).map(parseReviewZBRow) : [];
+      indices = indicesRes.status === "fulfilled"
+        ? (indicesRes.value.data?.diff ?? []).map((item) => ({
+            code: String(item.f12 ?? ""),
+            name: REVIEW_DIRECT_INDEX_NAMES[`${finiteNumber(item.f13)}.${item.f12}`] || REVIEW_DIRECT_INDEX_NAMES[`1.${item.f12}`] || String(item.f14 ?? ""),
+            price: finiteNumber(item.f2),
+            change: finiteNumber(item.f3),
+          })).filter((item) => item.name && item.price !== null)
+        : [];
+      sectors = sectorsRes.status === "fulfilled" ? { risers: sectorsRes.value.risers, fallers: sectorsRes.value.fallers } : null;
+      if (dragonRes.status === "fulfilled") {
+        const dragonData = dragonRes.value.result?.data;
+        if (Array.isArray(dragonData) && dragonData.length > 0) {
+          dragon = {
+            published: true,
+            items: dragonData.map((row): DragonItem => ({
+              code: String(row.SECURITY_CODE ?? ""), name: String(row.SECURITY_NAME_ABBR ?? ""),
+              reason: String(row.EXPLAIN ?? ""), close: finiteNumber(row.CLOSE_PRICE), change: finiteNumber(row.CHANGE_RATE),
+              net: finiteNumber(row.BILLBOARD_NET_AMT), buy: finiteNumber(row.BILLBOARD_BUY_AMT),
+              sell: finiteNumber(row.BILLBOARD_SEALE_AMT ?? row.BILLBOARD_SEAL_AMT), total: finiteNumber(row.BILLBOARD_DEAL_AMT),
+              amount: finiteNumber(row.ACCUM_AMOUNT), turnover: finiteNumber(row.TURNOVERRATE), freeMarketCap: finiteNumber(row.FREE_MARKET_CAP),
+            })),
+          };
+        }
+      }
+      break;
+    } catch { /* 节假日或网络异常，尝试前一交易日 */ }
+  }
+
+  // 本地计算情绪温度 / 题材 / 市场结构 / 仓位建议
+  const limitUpCount = ztRows.length;
+  const limitDownCount = dtRows.length;
+  const brokenCount = zbRows.length;
+  const maxBoards = ztRows.reduce((max, item) => Math.max(max, item.boards), 0);
+  const temperature = reviewSentimentTemperature(limitUpCount, limitDownCount, brokenCount, maxBoards);
+
+  const ladderMap = new Map<number, ReviewStock[]>();
+  ztRows.forEach((row) => {
+    const list = ladderMap.get(row.boards) ?? [];
+    list.push(row);
+    ladderMap.set(row.boards, list);
+  });
+  const ladder = Array.from(ladderMap.entries())
+    .sort((a, b) => b[0] - a[0])
+    .map(([boards, stocks]) => ({ boards, count: stocks.length, stocks }));
+
+  const useToday = usedDate === now.date;
+  const status: "pending" | "ready" = useToday && now.minutes < 15 * 60 + 30 ? "pending" : "ready";
+
+  const themeAnalysis = reviewBuildThemeAnalysis(ztRows);
+  const marketStructure = reviewBuildMarketStructure(
+    limitUpCount, limitDownCount, brokenCount, maxBoards, null, null, sectors,
+  );
+  const positionAdvice = reviewBuildPositionAdvice(temperature.score);
+
+  return {
+    date: usedDate,
+    status,
+    indices,
+    turnover: null,
+    breadth: null,
+    sentiment: {
+      limitUpCount, limitDownCount, brokenCount,
+      brokenRate: temperature.brokenRate, maxBoards, ladder,
+      temperature: { score: temperature.score, label: temperature.label, signals: temperature.signals },
+    },
+    limitUps: ztRows,
+    limitDowns: dtRows,
+    broken: zbRows,
+    sectors,
+    dragon,
+    themeAnalysis,
+    marketStructure,
+    positionAdvice,
+    meta: { mode: "live", updatedAt: Date.now(), source: "东方财富 · 涨跌停池直连" },
+  };
+}
+
 function ReviewPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
   const [data, setData] = useState<ReviewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2616,6 +2915,21 @@ function ReviewPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
       const url = targetDate ? `/api/market?action=review&date=${encodeURIComponent(targetDate)}` : "/api/market?action=review";
       const next = await fetchJson<ReviewData>(url, 60_000, 1);
       if (requestId !== requestRef.current) return;
+      // 服务端在 Vercel 香港出口被东财限流时，所有数据返回空（limitUpCount=0）。
+      // 此时降级为浏览器直连东方财富 API 取数（绕过 Vercel）。
+      if (next.sentiment.limitUpCount === 0) {
+        try {
+          const direct = await fetchReviewDirect(targetDate);
+          if (direct.sentiment.limitUpCount > 0) {
+            dataRef.current = direct;
+            setData(direct);
+            if (!targetDate) setDate(direct.date);
+            setError("");
+            updateConnection(direct.meta, "review");
+            return;
+          }
+        } catch { /* 直连失败则使用服务端结果 */ }
+      }
       dataRef.current = next;
       setData(next);
       if (!targetDate) setDate(next.date);
