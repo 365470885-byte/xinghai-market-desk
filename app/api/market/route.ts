@@ -1822,10 +1822,10 @@ async function reviewIndicesForDate(_date: string) {
 const BREADTH_UNIVERSE = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
 async function reviewBreadth() {
   let up = 0; let down = 0; let flat = 0; let total = 0;
-  for (let page = 1; page <= 60; page += 1) {
+  for (let page = 1; page <= 15; page += 1) {
     const result = await resilientJson(
-      `${EASTMONEY}/clist/get?pn=${page}&pz=200&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(BREADTH_UNIVERSE)}&fields=f3`,
-      30_000, { attempts: 1, timeoutMs: 8_000 },
+      `${EASTMONEY}/clist/get?pn=${page}&pz=500&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(BREADTH_UNIVERSE)}&fields=f3`,
+      30_000, { attempts: 1, timeoutMs: 6_000 },
     );
     const rows = result.value?.data?.diff ?? [];
     if (!rows.length) break;
@@ -1835,7 +1835,7 @@ async function reviewBreadth() {
       total += 1;
       if (ch > 0) up += 1; else if (ch < 0) down += 1; else flat += 1;
     }
-    if (rows.length < 200) break;
+    if (rows.length < 500) break;
   }
   return { up, down, flat, total };
 }
@@ -1919,13 +1919,15 @@ async function review(dateParam?: string) {
   const status = useToday && (now.hour * 60 + now.minute) < 15 * 60 + 30 ? "pending" : "ready";
 
   // 指数按复盘日取日K收盘价（今日则为当日最新价）；成交额与涨跌家数仅在复盘日为当日时取实时值。
-  const [indicesRes, turnoverRes, breadthRes, sectorsRes] = await Promise.allSettled([
+  const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
+    Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+  const [indicesRes, turnoverRes, breadthRes, sectorsRes, dragonRes] = await Promise.allSettled([
     reviewIndicesForDate(usedDate),
-    useToday ? marketTurnover() : Promise.reject(new Error("非当日复盘不提供实时成交额")),
-    useToday ? reviewBreadth() : Promise.reject(new Error("非当日复盘不提供涨跌家数")),
+    useToday ? withTimeout(marketTurnover(), 10_000) : Promise.reject(new Error("非当日复盘不提供实时成交额")),
+    useToday ? withTimeout(reviewBreadth(), 15_000) : Promise.reject(new Error("非当日复盘不提供涨跌家数")),
     sectorRanking(),
+    withTimeout(reviewDragon(usedDate), 15_000),
   ]);
-  const dragon = await reviewDragon(usedDate);
 
   const indices = indicesRes.status === "fulfilled" ? indicesRes.value : [];
   const turnover = turnoverRes.status === "fulfilled" ? turnoverRes.value : null;
@@ -1933,6 +1935,7 @@ async function review(dateParam?: string) {
   const sectors = sectorsRes.status === "fulfilled"
     ? { risers: sectorsRes.value.risers, fallers: sectorsRes.value.fallers }
     : null;
+  const dragon = dragonRes.status === "fulfilled" ? dragonRes.value : { published: false, items: [] as DragonItem[] };
 
   const auxResults: Array<{ fetchedAt: number; mode: CacheMode }> = [];
   if (metaResult) auxResults.push(metaResult);
