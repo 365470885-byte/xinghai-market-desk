@@ -1877,9 +1877,11 @@ async function review(dateParam?: string) {
       target = cursor.toISOString().slice(0, 10);
     }
   }
-  const candidates = candidateTradingDays(target, 10);
+  const candidates = candidateTradingDays(target, 3);
   let usedDate = candidates[0] || target;
   let ztRows: ReviewStock[] = [];
+  let dt: ReviewStock[] = [];
+  let zb: ReviewStock[] = [];
   let metaResult: { fetchedAt: number; mode: CacheMode } | null = null;
   for (const day of candidates) {
     const compact = day.replace(/-/g, "");
@@ -1889,16 +1891,17 @@ async function review(dateParam?: string) {
         usedDate = day;
         ztRows = zt.rows.map(parseZTRow);
         metaResult = { fetchedAt: zt.result.fetchedAt, mode: zt.result.mode };
+        // 同时拉取 DT/ZB，避免后续再请求
+        const [dtRes, zbRes] = await Promise.allSettled([
+          fetchTopicPool("DT", compact),
+          fetchTopicPool("ZB", compact),
+        ]);
+        dt = dtRes.status === "fulfilled" ? dtRes.value.rows.map(parseZTRow) : [];
+        zb = zbRes.status === "fulfilled" ? zbRes.value.rows.map(parseZBRow) : [];
         break;
       }
     } catch { /* 继续尝试前一交易日 */ }
   }
-  const compact = usedDate.replace(/-/g, "");
-  const [dt, zb] = await Promise.all([
-    fetchTopicPool("DT", compact).then((res) => res.rows.map(parseZTRow)).catch(() => [] as ReviewStock[]),
-    fetchTopicPool("ZB", compact).then((res) => res.rows.map(parseZBRow)).catch(() => [] as ReviewStock[]),
-  ]);
-
   const limitUpCount = ztRows.length;
   const limitDownCount = dt.length;
   const brokenCount = zb.length;
