@@ -1882,6 +1882,11 @@ async function review(dateParam?: string) {
   let ztRows: ReviewStock[] = [];
   let dt: ReviewStock[] = [];
   let zb: ReviewStock[] = [];
+  let indices: Array<{ code: string; name: string; price: number | null; change: number | null }> = [];
+  let turnover: { currentAmount: number; previousAmount: number; deltaPercent: number; currentDate: string } | null = null;
+  let breadth: { up: number; down: number; flat: number; total: number } | null = null;
+  let sectors: { risers: SectorRankCard[]; fallers: SectorRankCard[] } | null = null;
+  let dragon: { published: boolean; items: DragonItem[] } = { published: false, items: [] };
   let metaResult: { fetchedAt: number; mode: CacheMode } | null = null;
   for (const day of candidates) {
     const compact = day.replace(/-/g, "");
@@ -1891,13 +1896,26 @@ async function review(dateParam?: string) {
         usedDate = day;
         ztRows = zt.rows.map(parseZTRow);
         metaResult = { fetchedAt: zt.result.fetchedAt, mode: zt.result.mode };
-        // 同时拉取 DT/ZB，避免后续再请求
-        const [dtRes, zbRes] = await Promise.allSettled([
+        // 一次性并行拉取 DT/ZB/指数/成交额/涨跌家数/板块/龙虎榜
+        const useToday2 = day === now.date;
+        const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+          Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+        const [dtRes, zbRes, indicesRes, turnoverRes, breadthRes, sectorsRes, dragonRes] = await Promise.allSettled([
           fetchTopicPool("DT", compact),
           fetchTopicPool("ZB", compact),
+          reviewIndicesForDate(day),
+          useToday2 ? withTimeout(marketTurnover(), 8_000) : Promise.reject(new Error("skip")),
+          useToday2 ? withTimeout(reviewBreadth(), 8_000) : Promise.reject(new Error("skip")),
+          sectorRanking(),
+          withTimeout(reviewDragon(day), 8_000),
         ]);
         dt = dtRes.status === "fulfilled" ? dtRes.value.rows.map(parseZTRow) : [];
         zb = zbRes.status === "fulfilled" ? zbRes.value.rows.map(parseZBRow) : [];
+        indices = indicesRes.status === "fulfilled" ? indicesRes.value : [];
+        turnover = turnoverRes.status === "fulfilled" ? turnoverRes.value : null;
+        breadth = breadthRes.status === "fulfilled" ? breadthRes.value : null;
+        sectors = sectorsRes.status === "fulfilled" ? { risers: sectorsRes.value.risers, fallers: sectorsRes.value.fallers } : null;
+        dragon = dragonRes.status === "fulfilled" ? dragonRes.value : { published: false, items: [] as DragonItem[] };
         break;
       }
     } catch { /* 继续尝试前一交易日 */ }
@@ -1921,28 +1939,8 @@ async function review(dateParam?: string) {
   const useToday = usedDate === now.date;
   const status = useToday && (now.hour * 60 + now.minute) < 15 * 60 + 30 ? "pending" : "ready";
 
-  // 指数按复盘日取日K收盘价（今日则为当日最新价）；成交额与涨跌家数仅在复盘日为当日时取实时值。
-  const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
-    Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
-  const [indicesRes, turnoverRes, breadthRes, sectorsRes, dragonRes] = await Promise.allSettled([
-    reviewIndicesForDate(usedDate),
-    useToday ? withTimeout(marketTurnover(), 8_000) : Promise.reject(new Error("非当日复盘不提供实时成交额")),
-    useToday ? withTimeout(reviewBreadth(), 10_000) : Promise.reject(new Error("非当日复盘不提供涨跌家数")),
-    sectorRanking(),
-    withTimeout(reviewDragon(usedDate), 10_000),
-  ]);
-
-  const indices = indicesRes.status === "fulfilled" ? indicesRes.value : [];
-  const turnover = turnoverRes.status === "fulfilled" ? turnoverRes.value : null;
-  const breadth = breadthRes.status === "fulfilled" ? breadthRes.value : null;
-  const sectors = sectorsRes.status === "fulfilled"
-    ? { risers: sectorsRes.value.risers, fallers: sectorsRes.value.fallers }
-    : null;
-  const dragon = dragonRes.status === "fulfilled" ? dragonRes.value : { published: false, items: [] as DragonItem[] };
-
   const auxResults: Array<{ fetchedAt: number; mode: CacheMode }> = [];
   if (metaResult) auxResults.push(metaResult);
-  if (indicesRes.status === "fulfilled") auxResults.push({ fetchedAt: Date.now(), mode: "live" });
 
   const themeAnalysis = buildThemeAnalysis(ztRows);
   const marketStructure = buildMarketStructure(
