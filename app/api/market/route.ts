@@ -1654,7 +1654,7 @@ async function fetchTopicPool(type: "ZT" | "DT" | "ZB", compactDate: string) {
   const endpoint = type === "ZT" ? "getTopicZTPool" : type === "DT" ? "getTopicDTPool" : "getTopicZBPool";
   const sort = type === "ZB" ? "fbt:asc" : "fbt:asc";
   const url = `${PUSH2EX}/${endpoint}?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=10000&sort=${sort}&date=${compactDate}`;
-  const result = await resilientJson(url, 180_000, { attempts: 1, timeoutMs: 5_000 });
+  const result = await resilientJson(url, 180_000, { attempts: 1, timeoutMs: 3_000 });
   const pool = result.value?.data?.pool;
   return { rows: Array.isArray(pool) ? pool : [], result };
 }
@@ -1809,7 +1809,7 @@ async function reviewIndicesForDate(_date: string) {
   const secids = REVIEW_INDEX_SECIDS.join(",");
   const result = await resilientJson(
     `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f12,f14&secids=${encodeURIComponent(secids)}`,
-    30_000, { attempts: 1, timeoutMs: 5_000 },
+    30_000, { attempts: 1, timeoutMs: 3_000 },
   );
   return (result.value?.data?.diff ?? []).map((item: Record<string, unknown>) => ({
     code: String(item.f12 ?? ""),
@@ -1825,7 +1825,7 @@ async function reviewBreadth() {
   for (let page = 1; page <= 10; page += 1) {
     const result = await resilientJson(
       `${EASTMONEY}/clist/get?pn=${page}&pz=500&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(BREADTH_UNIVERSE)}&fields=f3`,
-      30_000, { attempts: 1, timeoutMs: 4_000 },
+      30_000, { attempts: 1, timeoutMs: 3_000 },
     );
     const rows = result.value?.data?.diff ?? [];
     if (!rows.length) break;
@@ -1849,7 +1849,7 @@ async function reviewDragon(date: string): Promise<{ published: boolean; items: 
   const filter = encodeURIComponent(`(TRADE_DATE>='${date}')(TRADE_DATE<='${date}')`);
   const url = `${EASTMONEY_DATACENTER}?sortColumns=BILLBOARD_NET_AMT&sortTypes=-1&pageSize=80&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILS&columns=ALL&source=WEB&client=WEB&filter=${filter}`;
   try {
-    const result = await resilientJson(url, 600_000, { attempts: 1, timeoutMs: 5_000 });
+    const result = await resilientJson(url, 600_000, { attempts: 1, timeoutMs: 3_000 });
     const data = result.value?.result?.data;
     if (!Array.isArray(data) || data.length === 0) return { published: false, items: [] };
     const items = data.map((row: Record<string, unknown>): DragonItem => ({
@@ -1877,7 +1877,7 @@ async function review(dateParam?: string) {
       target = cursor.toISOString().slice(0, 10);
     }
   }
-  const candidates = candidateTradingDays(target, 3);
+  const candidates = candidateTradingDays(target, 2);
   let usedDate = candidates[0] || target;
   let ztRows: ReviewStock[] = [];
   let dt: ReviewStock[] = [];
@@ -1904,10 +1904,10 @@ async function review(dateParam?: string) {
           fetchTopicPool("DT", compact),
           fetchTopicPool("ZB", compact),
           reviewIndicesForDate(day),
-          useToday2 ? withTimeout(marketTurnover(), 8_000) : Promise.reject(new Error("skip")),
-          useToday2 ? withTimeout(reviewBreadth(), 8_000) : Promise.reject(new Error("skip")),
+          useToday2 ? withTimeout(marketTurnover(), 6_000) : Promise.reject(new Error("skip")),
+          useToday2 ? withTimeout(reviewBreadth(), 6_000) : Promise.reject(new Error("skip")),
           sectorRanking(),
-          withTimeout(reviewDragon(day), 8_000),
+          withTimeout(reviewDragon(day), 6_000),
         ]);
         dt = dtRes.status === "fulfilled" ? dtRes.value.rows.map(parseZTRow) : [];
         zb = zbRes.status === "fulfilled" ? zbRes.value.rows.map(parseZBRow) : [];
