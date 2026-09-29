@@ -1,5 +1,6 @@
 export const runtime = "nodejs";
 export const preferredRegion = "hkg1";
+export const maxDuration = 60;
 
 type CacheMode = "live" | "cache" | "stale";
 
@@ -1653,7 +1654,7 @@ async function fetchTopicPool(type: "ZT" | "DT" | "ZB", compactDate: string) {
   const endpoint = type === "ZT" ? "getTopicZTPool" : type === "DT" ? "getTopicDTPool" : "getTopicZBPool";
   const sort = type === "ZB" ? "fbt:asc" : "fbt:asc";
   const url = `${PUSH2EX}/${endpoint}?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=10000&sort=${sort}&date=${compactDate}`;
-  const result = await resilientJson(url, 180_000, { attempts: 2, timeoutMs: 4_000 });
+  const result = await resilientJson(url, 180_000, { attempts: 2, timeoutMs: 8_000 });
   const pool = result.value?.data?.pool;
   return { rows: Array.isArray(pool) ? pool : [], result };
 }
@@ -1808,7 +1809,7 @@ async function reviewIndicesForDate(_date: string) {
   const secids = REVIEW_INDEX_SECIDS.join(",");
   const result = await resilientJson(
     `${EASTMONEY}/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f12,f14&secids=${encodeURIComponent(secids)}`,
-    30_000, { attempts: 2, timeoutMs: 3_000 },
+    30_000, { attempts: 2, timeoutMs: 8_000 },
   );
   return (result.value?.data?.diff ?? []).map((item: Record<string, unknown>) => ({
     code: String(item.f12 ?? ""),
@@ -1821,10 +1822,10 @@ async function reviewIndicesForDate(_date: string) {
 const BREADTH_UNIVERSE = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
 async function reviewBreadth() {
   let up = 0; let down = 0; let flat = 0; let total = 0;
-  for (let page = 1; page <= 80; page += 1) {
+  for (let page = 1; page <= 60; page += 1) {
     const result = await resilientJson(
-      `${EASTMONEY}/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(BREADTH_UNIVERSE)}&fields=f3`,
-      30_000, { attempts: 2, timeoutMs: 4_000 },
+      `${EASTMONEY}/clist/get?pn=${page}&pz=200&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(BREADTH_UNIVERSE)}&fields=f3`,
+      30_000, { attempts: 1, timeoutMs: 8_000 },
     );
     const rows = result.value?.data?.diff ?? [];
     if (!rows.length) break;
@@ -1834,7 +1835,7 @@ async function reviewBreadth() {
       total += 1;
       if (ch > 0) up += 1; else if (ch < 0) down += 1; else flat += 1;
     }
-    if (rows.length < 100) break;
+    if (rows.length < 200) break;
   }
   return { up, down, flat, total };
 }

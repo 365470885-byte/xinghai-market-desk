@@ -2612,7 +2612,7 @@ function ReviewPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
     setLoading(true);
     try {
       const url = targetDate ? `/api/market?action=review&date=${encodeURIComponent(targetDate)}` : "/api/market?action=review";
-      const next = await fetchJson<ReviewData>(url, 18_000, 0);
+      const next = await fetchJson<ReviewData>(url, 60_000, 1);
       if (requestId !== requestRef.current) return;
       dataRef.current = next;
       setData(next);
