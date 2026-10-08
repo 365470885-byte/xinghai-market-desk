@@ -931,5 +931,5 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .import-footer button { min-height: 40px; }
 }
 
-.sector-badge { font-style: normal; font-family: inherit; font-size: 11px; font-weight: 650; color: var(--gold); border: 1px solid color-mix(in srgb, var(--gold) 40%, transparent); border-radius: 4px; padding: 0 4px; margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 72px; flex-shrink: 0; }
+.sector-badge { font-style: normal; font-family: inherit; font-size: 10px; font-weight: 600; color: var(--muted); margin-left: auto; padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 72px; flex-shrink: 0; }
 
