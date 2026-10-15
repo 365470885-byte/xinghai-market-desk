@@ -1303,6 +1303,8 @@ export function StockTerminal() {
   const [searchMessage, setSearchMessage] = useState("");
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const pointerDrag = useRef<{ pointerId: number; sourceKey: string; targetKey: string } | null>(null);
+  const rowDrag = useRef<{ pointerId: number; sourceKey: string; targetKey: string; startX: number; startY: number; active: boolean } | null>(null);
+  const suppressRowClick = useRef(false);
   const quoteRequest = useRef<Record<"all" | "priority" | "overseas", number>>({ all: 0, priority: 0, overseas: 0 });
   const detailRequest = useRef(0);
   const quoteBusy = useRef<Record<"all" | "priority" | "overseas", boolean>>({ all: false, priority: false, overseas: false });
@@ -1996,6 +1998,57 @@ export function StockTerminal() {
     if (session.targetKey !== session.sourceKey) setNotice("自选股顺序已保存");
   };
 
+  // 整行拖动：按下后移动超过阈值才算拖动，否则保留点击选中行为
+  const beginRowDrag = (event: ReactPointerEvent<HTMLDivElement>, sourceKey: string) => {
+    if (watchSelectionMode || event.button !== 0) return;
+    const hit = event.target as HTMLElement;
+    if (hit.closest(".row-menu") || hit.closest(".watch-drag-handle")) return;
+    rowDrag.current = { pointerId: event.pointerId, sourceKey, targetKey: sourceKey, startX: event.clientX, startY: event.clientY, active: false };
+  };
+
+  const moveRowDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const session = rowDrag.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    if (!session.active) {
+      const dx = event.clientX - session.startX;
+      const dy = event.clientY - session.startY;
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      session.active = true;
+      enterManualWatchOrder();
+      setDraggingWatchKey(session.sourceKey);
+      window.getSelection()?.removeAllRanges();
+      document.body.style.userSelect = "none";
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    event.preventDefault();
+    const list = event.currentTarget.closest<HTMLElement>(".watch-list");
+    if (list) {
+      const bounds = list.getBoundingClientRect();
+      if (event.clientY < bounds.top + 42) list.scrollBy({ top: -18, behavior: "auto" });
+      else if (event.clientY > bounds.bottom - 42) list.scrollBy({ top: 18, behavior: "auto" });
+    }
+    const row = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-watch-row-key]");
+    const targetKey = row?.dataset.watchRowKey || "";
+    if (!targetKey || targetKey === session.targetKey) return;
+    session.targetKey = targetKey;
+    reorderWatchStock(session.sourceKey, targetKey);
+  };
+
+  const endRowDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const session = rowDrag.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    const wasActive = session.active;
+    rowDrag.current = null;
+    document.body.style.userSelect = "";
+    if (!wasActive) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setDraggingWatchKey("");
+    if (session.targetKey !== session.sourceKey) {
+      suppressRowClick.current = true;
+      setNotice("自选股顺序已保存");
+    }
+  };
+
   const moveWatchStockByKeyboard = (sourceKey: string, direction: -1 | 1) => {
     enterManualWatchOrder();
     const currentIndex = displayedStocks.findIndex((stock) => keyOf(stock) === sourceKey);
@@ -2122,7 +2175,9 @@ export function StockTerminal() {
             {displayedStocks.map((stock) => {
               const key = keyOf(stock); const quote = quotes[key]; const selected = selectedWatchKeys.has(key);
               return <div key={key} data-watch-row-key={key}
-                className={`watch-row ${activeKey === key ? "active" : ""} ${selected ? "selected" : ""} ${draggingWatchKey === key ? "dragging" : ""}`} onContextMenu={(event) => { event.preventDefault(); if (!watchSelectionMode) setMenu({ key, x: event.clientX, y: event.clientY }); }}>
+                className={`watch-row ${activeKey === key ? "active" : ""} ${selected ? "selected" : ""} ${draggingWatchKey === key ? "dragging" : ""}`} onContextMenu={(event) => { event.preventDefault(); if (!watchSelectionMode) setMenu({ key, x: event.clientX, y: event.clientY }); }}
+                onPointerDown={(event) => beginRowDrag(event, key)} onPointerMove={moveRowDrag} onPointerUp={endRowDrag} onPointerCancel={endRowDrag}
+                onClickCapture={(event) => { if (suppressRowClick.current) { event.preventDefault(); event.stopPropagation(); suppressRowClick.current = false; } }}>
                 {!watchSelectionMode && <button type="button" className="watch-drag-handle" aria-label={`拖动排序 ${quote?.name || stock.name}，也可用上下方向键移动`} title="按住拖动排序" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }} onPointerDown={(event) => beginWatchDrag(event, key)} onPointerMove={moveWatchDrag} onPointerUp={endWatchDrag} onPointerCancel={endWatchDrag} onKeyDown={(event) => { if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return; event.preventDefault(); event.stopPropagation(); moveWatchStockByKeyboard(key, event.key === "ArrowUp" ? -1 : 1); }}><span aria-hidden="true">⋮⋮</span></button>}
                 <button type="button" className={`watch-select ${watchSelectionMode ? "selecting" : ""}`} data-stock-key={key} aria-pressed={watchSelectionMode ? selected : activeKey === key} aria-label={watchSelectionMode ? `${selected ? "取消选择" : "选择"} ${quote?.name || stock.name}` : undefined} onClick={() => watchSelectionMode ? toggleWatchSelection(key) : selectStock(key)}>
                   {watchSelectionMode && <span className="watch-checkbox" aria-hidden="true">{selected ? "✓" : ""}</span>}
@@ -2135,7 +2190,7 @@ export function StockTerminal() {
             })}
             {!watchlist.length && <EmptyState title="自选列表为空" detail="在顶部搜索并添加股票" />}
           </div>
-          <div className="sidebar-hint"><span>{watchSelectionMode ? "点击股票勾选 · 支持全选与批量处理" : "拖动每只股票左侧把手排序 · 右键管理"}</span><span>右下角可缩放</span></div>
+          <div className="sidebar-hint"><span>{watchSelectionMode ? "点击股票勾选 · 支持全选与批量处理" : "按住股票行拖动排序 · 右键管理"}</span><span>右下角可缩放</span></div>
         </aside>
 
         <main className="research-main">
