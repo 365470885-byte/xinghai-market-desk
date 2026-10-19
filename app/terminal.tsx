@@ -2,11 +2,12 @@
 
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WatchlistImportDialog, type ImportedStock } from "./watchlist-import";
+import { BoardReviewPage, StciPage } from "./review-pages";
 
-type PageKey = "watch" | "capital" | "rankings" | "strong-unsealed";
+type PageKey = "watch" | "capital" | "rankings" | "strong-unsealed" | "stci" | "board-review";
 type ChartMode = "time" | "day";
 type MarketMeta = { mode: "live" | "cache" | "stale" | "offline"; updatedAt: number; source: string };
-type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings" | "strong-unsealed" | "sector-rank";
+type FeedKey = "quotes" | "detail" | "speeds" | "turnover" | "sectors" | "sector-detail" | "capital" | "rankings" | "strong-unsealed" | "sector-rank" | "stci" | "board-review";
 type FeedSnapshot = MarketMeta & { label: string };
 type WatchSort = "manual" | "change" | "speed" | "amount";
 type RankingSort = "rise" | "fall" | "speed3" | "amount";
@@ -138,6 +139,7 @@ const CAPITAL_CACHE_KEY = "xinghai_capital_cache_v1";
 const FEED_LABELS: Record<FeedKey, string> = {
   quotes: "自选摘要", detail: "个股详情", speeds: "4分涨速", turnover: "市场成交额",
   sectors: "板块列表", "sector-detail": "板块成分", capital: "资金流向", rankings: "涨跌排行", "strong-unsealed": "8%以上未涨停", "sector-rank": "板块涨跌排行",
+  stci: "STCI 情绪指数", "board-review": "每日打板复盘",
 };
 
 const keyOf = (stock: Pick<Stock, "market" | "code">) => `${stock.market}.${stock.code}`;
@@ -2064,8 +2066,9 @@ export function StockTerminal() {
         event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return;
       }
       if (isTextEntry(event.target) || event.altKey || event.metaKey || event.ctrlKey) return;
-      if (event.key === "1" || event.key === "2" || event.key === "3" || event.key === "4") {
-        setPage(event.key === "1" ? "watch" : event.key === "2" ? "capital" : event.key === "3" ? "rankings" : "strong-unsealed"); return;
+      if (["1", "2", "3", "4", "5", "6"].includes(event.key)) {
+        const target: PageKey = event.key === "1" ? "watch" : event.key === "2" ? "capital" : event.key === "3" ? "rankings" : event.key === "4" ? "strong-unsealed" : event.key === "5" ? "stci" : "board-review";
+        setPage(target); return;
       }
       if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "k") {
         if (!displayedStocks.length) return;
@@ -2110,7 +2113,7 @@ export function StockTerminal() {
           <div><strong>星辰大海</strong><small>行情研究台</small></div>
         </div>
         <nav className="main-tabs" aria-label="主要页面">
-          {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"], ["strong-unsealed", "强势未板"] ] as Array<[PageKey, string]>).map(([key, label]) => (
+          {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"], ["strong-unsealed", "强势未板"], ["stci", "情绪指数"], ["board-review", "打板复盘"] ] as Array<[PageKey, string]>).map(([key, label]) => (
             <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => setPage(key)}>{label}</button>
           ))}
         </nav>
@@ -2218,13 +2221,15 @@ export function StockTerminal() {
         <aside className={`insight-rail ${railOpen ? "open" : ""}`}>
           <section className="panel pulse-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>市场快照</span><strong>指数快照</strong></div></div>{indexStocks.map((quote) => <button key={keyOf(quote)} onClick={() => selectStock(keyOf(quote))}><div><span>{quote.name}</span><strong>{number(quote.price)}</strong></div><Sparkline values={[0, quote.speed || 0, (quote.changePercent || 0) * .6, quote.changePercent || 0]} value={quote.changePercent} /><em className={tone(quote.changePercent)}>{signed(quote.changePercent)}</em></button>)}</section>
           <section className="panel reliability-card" title="拖动右下角可调整宽高"><div className="section-head compact"><div><span>数据状态</span><strong>刷新环境</strong></div></div><div className="health-score"><strong>{connection === "online" ? "优" : connection === "stale" ? "缓" : connection === "offline" ? "断" : "—"}</strong><div><span>{connection === "online" ? "各模块正常" : connection === "stale" ? "存在过期缓存" : connection === "offline" ? "部分数据不可用" : "等待连接"}</span><p>全局按最差模块状态显示</p></div></div><div className="feed-ledger">{Object.entries(feedStates).map(([key, value]) => <DataStamp key={key} meta={value} label={value?.label || FEED_LABELS[key as FeedKey]} compact />)}</div></section>
-          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1/2/3/4 切换页面 · 空格键暂停</kbd></section>
+          <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1~6 切换页面 · 空格键暂停</kbd></section>
         </aside>
       </div>}
 
       {page === "capital" && <CapitalPage updateConnection={updateConnection} />}
       {page === "rankings" && <RankingsPage onPick={addStock} updateConnection={updateConnection} />}
       {page === "strong-unsealed" && <StrongUnsealedPage onPick={addStock} updateConnection={updateConnection} />}
+      {page === "stci" && <StciPage updateConnection={updateConnection} />}
+      {page === "board-review" && <BoardReviewPage updateConnection={updateConnection} />}
 
       {menu && <div className="context-menu" role="menu" aria-label="自选股操作" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }}>
         <button type="button" role="menuitem" onClick={() => togglePin(menu.key)}><span aria-hidden="true">◆</span>{pinned.has(menu.key) ? "取消固定" : "固定置顶"}</button>

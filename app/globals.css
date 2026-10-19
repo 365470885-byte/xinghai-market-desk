@@ -933,3 +933,152 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .sector-badge { font-style: normal; font-family: inherit; font-size: 10px; font-weight: 600; color: var(--muted); margin-left: auto; padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 72px; flex-shrink: 0; }
 
+/* ==========================================================================
+   STCI 情绪指数 / 每日打板复盘（白底 · 蓝色标题 · 红涨绿跌）
+   ========================================================================== */
+.review-page { min-height: calc(100vh - 90px); display: flex; flex-direction: column; gap: 12px; padding: 12px; background: #ffffff; color: #1f2430; }
+.review-page .panel { min-width: 0; min-height: 0; padding: 14px; border: 1px solid #e3e6ec; border-radius: 8px; background: #f9fafc; box-shadow: 0 1px 3px rgba(31, 36, 48, .06); resize: none; overflow: auto; }
+.review-page .data-stamp { background: #ffffff; }
+.review-page .data-stamp.compact { min-height: 34px; }
+.review-page .data-stamp.compact em { display: block; }
+
+/* 顶部概览 */
+.review-hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 18px; padding: 16px 18px !important; }
+.review-hero-main { min-width: 0; }
+.review-eyebrow { display: block; color: #6b7686; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; }
+.review-hero h1 { margin: 4px 0 9px; color: #0b3f6b; font-size: 20px; font-weight: 750; }
+.review-hero-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-hero-tags b { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 12px; font-size: 11.5px; font-weight: 680; font-style: normal; }
+.review-phase { color: #0b3f6b; border: 1px solid #c9dbe9; background: #eef6fc; }
+.review-trend { border: 1px solid #dcdfe6; background: #f1f3f6; }
+.review-trend.up { border-color: #e8b7ae; background: #fdf2f1; }
+.review-trend.down { border-color: #b4d6cc; background: #ecf8f4; }
+.review-confidence { color: #5c6675; border: 1px solid #e0e3e9; background: #f7f8fa; font-weight: 620; }
+.review-score-block { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; min-width: 216px; padding: 10px 15px; border: 1px solid #e3e6ec; border-radius: 8px; background: #ffffff; }
+.review-score-block > span { color: #6b7686; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; }
+.review-score-block > strong { font: 800 34px/1.05 var(--font-data); }
+.review-score-block > strong.review-mainline-name { color: #0b3f6b; font-size: 20px; line-height: 1.3; text-align: right; }
+.review-score-block > em { color: #6b7686; font-size: 10px; font-style: normal; text-align: right; line-height: 1.5; }
+.review-hero-side { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
+.review-hero-side > .data-stamp { flex: 1; min-width: 0; }
+.review-hero-side > button { flex: 0 0 auto; min-height: 34px; padding: 0 18px; border: 1px solid #9fbcce; border-radius: 5px; background: #0b6fae; color: #ffffff; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.review-hero-side > button:disabled { opacity: .6; cursor: default; }
+
+/* 风险预警 / 异动提醒 */
+.review-alerts { display: flex; flex-direction: column; gap: 8px; }
+.review-alert { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 10px 14px; border: 1px solid #e3e6ec; border-radius: 7px; font-size: 12.5px; }
+.review-alert > strong { font-size: 13px; font-weight: 750; }
+.review-alert > span { color: #40485a; line-height: 1.6; }
+.review-alert.high { border-color: #e5aca6; background: #fdf1f0; }
+.review-alert.high > strong { color: #b3261e; }
+.review-alert.mid { border-color: #e8cb96; background: #fdf8ec; }
+.review-alert.mid > strong { color: #93641f; }
+.review-alert.none { border-color: #cfd8e2; background: #f5f8fb; }
+.review-alert.none > strong { color: #3d5872; }
+
+/* 四张分指数卡片 */
+.review-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.review-card { display: flex; flex-direction: column; gap: 8px; }
+.review-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.review-card-head > span { color: #0b3f6b; font-size: 12.5px; font-weight: 720; }
+.review-card-head > em { color: #6b7686; font-size: 10.5px; font-style: normal; font-weight: 620; }
+.review-card > strong { font: 800 30px/1 var(--font-data); }
+.review-card > p { margin: 0; color: #5c6675; font-size: 11px; line-height: 1.65; }
+.review-bar { height: 6px; border-radius: 3px; background: #e7ebf0; overflow: hidden; }
+.review-bar > i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #7fb2d9, #0b6fae); transition: width .4s; }
+
+/* 分数色阶：≥75 红 / ≥65 橙 / ≥45 棕 / ≥25 蓝 / <25 深蓝 */
+.score-hot { color: #c0271c; }
+.score-good { color: #c2711a; }
+.score-mid { color: #8a6a4f; }
+.score-warn { color: #1567b3; }
+.score-bad { color: #123a63; }
+.score-na { color: #8d97a5; }
+
+/* 章节与表格 */
+.review-section { padding: 14px 16px !important; }
+.review-section > h2 { margin: 0 0 12px; padding-bottom: 9px; border-bottom: 1px solid #e3e6ec; color: #0b3f6b; font-size: 14.5px; font-weight: 750; }
+.review-section > h3 { margin: 16px 0 8px; color: #1f2430; font-size: 13px; font-weight: 720; }
+.review-ladder-block { margin-bottom: 16px; }
+.review-ladder-block:last-of-type { margin-bottom: 0; }
+.review-ladder-block > h3 { margin: 0 0 8px; color: #0b3f6b; font-size: 13px; font-weight: 720; }
+.review-ladder-block > h3 > em { color: #6b7686; font-size: 11px; font-style: normal; font-weight: 620; }
+.review-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11.5px; }
+.review-table thead th { padding: 7px 8px; border-bottom: 1px solid #d8dee6; background: #f2f5f9; color: #3d5872; font-size: 10.5px; font-weight: 720; text-align: left; white-space: nowrap; }
+.review-table tbody td { padding: 6px 8px; border-bottom: 1px solid #eef1f5; color: #28303e; vertical-align: top; }
+.review-table tbody tr:hover { background: #f7fafc; }
+.review-table tbody tr:last-child td { border-bottom: 0; }
+.review-table td:first-child { font-weight: 650; }
+.review-page td.role-leader, .review-page td.role-sector, .review-page td.role-follow, .review-page td.role-weak { font-weight: 720; white-space: nowrap; }
+.role-leader { color: #b3261e; }
+.role-sector { color: #c2711a; }
+.role-follow { color: #1567b3; }
+.role-weak { color: #8d97a5; }
+
+/* 评分归因 */
+.review-attribution { margin: 0 0 10px; padding: 9px 12px; border-left: 3px solid #0b6fae; border-radius: 4px; background: #f2f8fd; color: #22364a; font: 650 12.5px/1.7 var(--font-data); }
+.review-contrib { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.review-contrib > div { display: flex; flex-direction: column; gap: 2px; padding: 8px 11px; border: 1px solid #e3e6ec; border-radius: 6px; background: #ffffff; }
+.review-contrib > div > span { color: #6b7686; font-size: 10.5px; font-weight: 650; }
+.review-contrib > div > strong { font: 750 16px/1.2 var(--font-data); }
+.review-contrib > div > em { color: #8d97a5; font-size: 10px; font-style: normal; }
+.review-note-line { margin: 9px 0 0; color: #5c6675; font-size: 11.5px; line-height: 1.75; }
+.review-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.review-group { padding: 12px; border: 1px solid #e3e6ec; border-radius: 7px; background: #ffffff; }
+.review-group > h3 { margin: 0 0 7px; color: #0b3f6b; font-size: 12.5px; font-weight: 720; }
+.review-group .review-table { margin-top: 4px; }
+.review-conclusion { margin: 0 0 7px; color: #2b3a4d; font-size: 11.5px; line-height: 1.75; }
+.review-extreme { margin: 0 0 7px; padding: 5px 9px; border-radius: 4px; background: #fdf6ea; color: #8a5a22; font-size: 11px; line-height: 1.6; }
+
+/* 连板梯队 / 走势图 / 指标网格 */
+.review-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.review-ladder { display: flex; flex-direction: column; gap: 6px; }
+.review-ladder > div { display: grid; grid-template-columns: 46px 32px minmax(0, 1fr); align-items: center; gap: 8px; padding: 5px 8px; border-radius: 4px; background: #f0f4f9; }
+.review-ladder > div > span { color: #0b3f6b; font-size: 11px; font-weight: 720; }
+.review-ladder > div > strong { color: #28303e; font: 750 12px/1 var(--font-data); text-align: right; }
+.review-ladder > div > i { display: block; height: 8px; max-width: 100%; border-radius: 4px; background: linear-gradient(90deg, #7fb2d9, #0b6fae); }
+.review-chart { display: flex; align-items: flex-end; gap: 5px; min-height: 206px; padding: 8px 4px 0; overflow-x: auto; }
+.review-chart-col { flex: 1 0 32px; height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; }
+.review-chart-col > span { font: 700 10px/1 var(--font-data); }
+.review-chart-col > i { display: block; width: 66%; max-height: calc(100% - 28px); border-radius: 3px 3px 0 0; background: linear-gradient(180deg, #7fb2d9, #0b6fae); }
+.review-chart-col > em { color: #8d97a5; font-size: 9.5px; font-style: normal; }
+.review-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(152px, 1fr)); gap: 8px; }
+.review-metrics > div { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border: 1px solid #e3e6ec; border-radius: 6px; background: #ffffff; }
+.review-metrics > div > span { color: #6b7686; font-size: 10.5px; font-weight: 650; }
+.review-metrics > div > strong { color: #1f2430; font: 700 14px/1.3 var(--font-data); }
+
+/* 说明与免责声明 */
+.review-notes { margin: 0 0 10px; padding-left: 18px; color: #2b3a4d; font-size: 11.5px; line-height: 1.85; }
+.review-notes:last-child { margin-bottom: 0; }
+.review-notes > li { margin-bottom: 3px; }
+.review-disclaimer { margin: 2px 0 0; padding: 10px 14px; border: 1px dashed #d3dae2; border-radius: 6px; background: #fafbfc; color: #7c8794; font-size: 11px; text-align: center; }
+
+/* 加载与错误 */
+.review-loading { min-height: 60vh; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 9px; }
+.review-loading > div { width: 9px; height: 9px; border-radius: 50%; background: #0b6fae; animation: review-pulse 1s infinite ease-in-out; }
+.review-loading > div:nth-child(2) { animation-delay: .16s; background: #4b96cd; }
+.review-loading > div:nth-child(3) { animation-delay: .32s; background: #8dc0e3; }
+.review-loading > span { flex-basis: 100%; margin-top: 8px; color: #5c6675; font-size: 12.5px; text-align: center; }
+@keyframes review-pulse { 0%, 100% { opacity: .3; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-6px); } }
+.review-error { max-width: 520px; margin: 12vh auto; padding: 22px !important; background: #ffffff !important; text-align: center; }
+.review-error > strong { display: block; color: #b3261e; font-size: 15px; font-weight: 750; }
+.review-error > p { margin: 9px 0 14px; color: #5c6675; font-size: 12px; }
+.review-error > button { min-height: 34px; padding: 0 18px; border: 1px solid #9fbcce; border-radius: 5px; background: #0b6fae; color: #ffffff; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+
+@media (max-width: 1180px) {
+  .review-grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .review-grid2, .review-groups { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+  .review-page { padding: 6px; gap: 9px; }
+  .review-hero { grid-template-columns: minmax(0, 1fr); }
+  .review-hero h1 { font-size: 17px; }
+  .review-score-block { min-width: 0; align-items: flex-start; }
+  .review-score-block > strong { font-size: 28px; }
+  .review-score-block > strong.review-mainline-name, .review-score-block > em { text-align: left; }
+  .review-grid4 { grid-template-columns: 1fr; }
+  .review-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .review-section { padding: 10px 11px !important; }
+}
+
