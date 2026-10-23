@@ -76,7 +76,7 @@ function LoadingBlock({ text }: { text: string }) {
 
 const stciCache: { value: StciPayload | null; at: number } = { value: null, at: 0 };
 
-export function StciPage({ updateConnection }: { updateConnection: UpdateConnection }) {
+export function StciPage({ updateConnection, active = true }: { updateConnection: UpdateConnection; active?: boolean }) {
   const [data, setData] = useState<StciPayload | null>(stciCache.value);
   const [loading, setLoading] = useState(!stciCache.value);
   const [error, setError] = useState("");
@@ -116,6 +116,7 @@ export function StciPage({ updateConnection }: { updateConnection: UpdateConnect
 
   useEffect(() => {
     let cancelled = false;
+    if (!active) return;
     void load(false);
     let timer = 0;
     const schedule = () => {
@@ -126,7 +127,7 @@ export function StciPage({ updateConnection }: { updateConnection: UpdateConnect
     };
     schedule();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [load]);
+  }, [active, load]);
 
   if (!data && loading) return <main className="review-page" id="main-content"><LoadingBlock text={step || "正在计算 STCI 短线连板情绪指数…"} /></main>;
   if (!data) return <main className="review-page" id="main-content">
@@ -282,7 +283,7 @@ function roleClass(role: DragonScore["role"]) {
   return role === "总龙" ? "role-leader" : role === "板块龙" ? "role-sector" : role === "补涨龙" ? "role-follow" : "role-weak";
 }
 
-export function BoardReviewPage({ updateConnection }: { updateConnection: UpdateConnection }) {
+export function BoardReviewPage({ updateConnection, active = true }: { updateConnection: UpdateConnection; active?: boolean }) {
   const [data, setData] = useState<BoardReviewPayload | null>(boardCache.value);
   const [loading, setLoading] = useState(!boardCache.value);
   const [error, setError] = useState("");
@@ -320,6 +321,7 @@ export function BoardReviewPage({ updateConnection }: { updateConnection: Update
 
   useEffect(() => {
     let cancelled = false;
+    if (!active) return;
     void load(false);
     let timer = 0;
     const schedule = () => {
@@ -330,7 +332,7 @@ export function BoardReviewPage({ updateConnection }: { updateConnection: Update
     };
     schedule();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [load]);
+  }, [active, load]);
 
   if (!data && loading) return <main className="review-page" id="main-content"><LoadingBlock text="正在拉取涨跌停池、龙虎榜并计算主线龙头打分…" /></main>;
   if (!data) return <main className="review-page" id="main-content">

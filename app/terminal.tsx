@@ -916,7 +916,7 @@ async function fetchAShareQuotes(stocks: Stock[]) {
 
   const missing = stocks.filter((stock) => !direct.some((item) => keyOf(item) === keyOf(stock)));
   const remote = missing.length
-    ? await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(missing.map(keyOf).join(","))}`).catch(() => ({
+    ? await fetchJson<{ items: Quote[]; meta: MarketMeta }>(`/api/market?action=quotes&secids=${encodeURIComponent(missing.map(keyOf).join(","))}`, 3_500).catch(() => ({
       items: [] as Quote[],
       meta: { mode: direct.length ? "stale" : "offline", updatedAt: direct.length ? Date.now() : 0, source: "服务端备用暂不可用" } as MarketMeta,
     }))
@@ -1275,6 +1275,12 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 
 export function StockTerminal() {
   const [page, setPage] = useState<PageKey>("watch");
+  // 页面保活：首次访问后保持挂载，切换回来时不再重新挂载 / 重新布局。
+  const [mountedPages, setMountedPages] = useState<PageKey[]>(["watch"]);
+  const openPage = useCallback((key: PageKey) => {
+    setPage(key);
+    setMountedPages((current) => (current.includes(key) ? current : [...current, key]));
+  }, []);
   const [watchGroup, setWatchGroup] = useState<WatchGroupKey>("main");
   const [watchGroups, setWatchGroups] = useState<Record<WatchGroupKey, Stock[]>>(DEFAULT_WATCH_GROUPS);
   const [pinned, setPinned] = useState<Set<string>>(new Set(DEFAULT_PINNED));
@@ -1465,7 +1471,7 @@ export function StockTerminal() {
 
   const selectStock = useCallback((key: string) => {
     if (!key) return;
-    setPage("watch");
+    openPage("watch");
     if (key === activeKey) return;
     // Invalidate the previous stock immediately so a slow response can never
     // paint over the newly selected row.
@@ -1475,7 +1481,7 @@ export function StockTerminal() {
     detailRef.current = cached;
     setDetail(cached);
     setActiveKey(key);
-  }, [activeKey]);
+  }, [activeKey, openPage]);
 
   const updateConnection = useCallback((nextMeta: MarketMeta, feed: FeedKey = "quotes") => {
     setFeedStates((current) => ({ ...current, [feed]: { ...nextMeta, label: FEED_LABELS[feed] } }));
@@ -1589,9 +1595,9 @@ export function StockTerminal() {
     const poll = async () => {
       const trading = isAShareTrading();
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, trading ? "priority" : "all");
-      timer = window.setTimeout(poll, trading ? 650 : 5_000);
+      timer = window.setTimeout(poll, trading ? 400 : 2_000);
     };
-    timer = window.setTimeout(poll, isAShareTrading() ? 200 : 5_000);
+    timer = window.setTimeout(poll, isAShareTrading() ? 120 : 1_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -1599,7 +1605,7 @@ export function StockTerminal() {
     let timer = 0;
     const pollSpecial = async () => {
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, "overseas");
-      timer = window.setTimeout(pollSpecial, isAShareTrading() ? 10_000 : 5_000);
+      timer = window.setTimeout(pollSpecial, isAShareTrading() ? 6_000 : 3_000);
     };
     timer = window.setTimeout(pollSpecial, 2_000);
     return () => window.clearTimeout(timer);
@@ -1609,9 +1615,9 @@ export function StockTerminal() {
     let timer = 0;
     const pollAll = async () => {
       if (!pollingPaused && document.visibilityState === "visible") await refreshQuotes(true, "all");
-      timer = window.setTimeout(pollAll, isAShareTrading() ? 3_000 : 20_000);
+      timer = window.setTimeout(pollAll, isAShareTrading() ? 1_500 : 5_000);
     };
-    timer = window.setTimeout(pollAll, isAShareTrading() ? 3_000 : 20_000);
+    timer = window.setTimeout(pollAll, isAShareTrading() ? 1_500 : 5_000);
     return () => window.clearTimeout(timer);
   }, [pollingPaused, refreshQuotes]);
 
@@ -1635,7 +1641,7 @@ export function StockTerminal() {
     const initial = window.setTimeout(refreshSpeeds, 1_500);
     const timer = window.setInterval(() => {
       if (!pollingPaused && document.visibilityState === "visible") refreshSpeeds();
-    }, isAShareTrading() ? 60_000 : 120_000);
+    }, isAShareTrading() ? 20_000 : 60_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, [pollingPaused, refreshSpeeds]);
 
@@ -1654,7 +1660,7 @@ export function StockTerminal() {
     refreshMarketTurnover();
     const timer = window.setInterval(() => {
       if (!pollingPaused && document.visibilityState === "visible") refreshMarketTurnover();
-    }, isAShareTrading() ? 5_000 : 20_000);
+    }, isAShareTrading() ? 3_000 : 8_000);
     return () => window.clearInterval(timer);
   }, [pollingPaused, refreshMarketTurnover]);
 
@@ -1771,11 +1777,11 @@ export function StockTerminal() {
     let timer = 0;
     const poll = async () => {
       const active = watchlist.find((item) => keyOf(item) === activeKey);
-      const delay = active && (active.market === 0 || active.market === 1 || active.market === 102) && !isAShareTrading() ? 20_000 : 2_000;
+      const delay = active && (active.market === 0 || active.market === 1 || active.market === 102) && !isAShareTrading() ? 8_000 : 1_500;
       if (!pollingPaused && page === "watch" && document.visibilityState === "visible") await refreshDetail(true);
       timer = window.setTimeout(poll, delay);
     };
-    timer = window.setTimeout(poll, 2_000);
+    timer = window.setTimeout(poll, 1_000);
     return () => window.clearTimeout(timer);
   }, [activeKey, page, pollingPaused, refreshDetail, watchlist]);
 
@@ -2068,7 +2074,7 @@ export function StockTerminal() {
       if (isTextEntry(event.target) || event.altKey || event.metaKey || event.ctrlKey) return;
       if (["1", "2", "3", "4", "5", "6"].includes(event.key)) {
         const target: PageKey = event.key === "1" ? "watch" : event.key === "2" ? "capital" : event.key === "3" ? "rankings" : event.key === "4" ? "strong-unsealed" : event.key === "5" ? "stci" : "board-review";
-        setPage(target); return;
+        openPage(target); return;
       }
       if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "k") {
         if (!displayedStocks.length) return;
@@ -2114,7 +2120,7 @@ export function StockTerminal() {
         </div>
         <nav className="main-tabs" aria-label="主要页面">
           {([ ["watch", "自选行情"], ["capital", "资金流向"], ["rankings", "涨跌排行"], ["strong-unsealed", "强势未板"], ["stci", "情绪指数"], ["board-review", "打板复盘"] ] as Array<[PageKey, string]>).map(([key, label]) => (
-            <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => setPage(key)}>{label}</button>
+            <button type="button" key={key} className={page === key ? "active" : ""} aria-current={page === key ? "page" : undefined} onClick={() => openPage(key)}>{label}</button>
           ))}
         </nav>
         <div className="top-actions">
@@ -2158,7 +2164,8 @@ export function StockTerminal() {
         <div>{alerts.map((item) => <button type="button" key={item.key} className={item.tone} onClick={() => { if (item.stockKey) selectStock(item.stockKey); }}><i aria-hidden="true" />{item.label}</button>)}</div>
       </section>}
 
-      {page === "watch" && <div className="watch-layout" id="main-content">
+      <div className="page-slot" style={{ display: page === "watch" ? "contents" : "none" }}>
+      {mountedPages.includes("watch") && <div className="watch-layout" id="main-content">
         <aside className={`watch-sidebar panel ${compactList ? "compact-list" : ""}`} title="拖动右下角可调整宽高">
           <div className="panel-title"><div><span>自选列表</span><strong>我的自选</strong></div><div className="panel-actions"><button type="button" className="screenshot-import-button" onClick={() => setScreenshotImportOpen(true)}>上传截图</button><button type="button" className={watchSelectionMode ? "active" : ""} onClick={() => { setWatchSelectionMode((current) => !current); setSelectedWatchKeys(new Set()); setMenu(null); }} aria-pressed={watchSelectionMode}>{watchSelectionMode ? "完成" : "多选"}</button><button type="button" onClick={() => setCompactList((current) => !current)} aria-pressed={compactList}>{compactList ? "紧凑" : "舒展"}</button><em>{watchlist.length}</em></div></div>
           <div className="watch-groups" role="tablist" aria-label="自选股分组">
@@ -2224,12 +2231,23 @@ export function StockTerminal() {
           <section className="panel note-card" title="拖动右下角可调整宽高"><span>使用说明</span><p>暖色表示上涨，青色表示下跌。数据仅供研究，不构成投资建议；上游中断时会标记来源、时间与数据年龄。</p><kbd>控制键加斜杠搜索 · 数字键 1~6 切换页面 · 空格键暂停</kbd></section>
         </aside>
       </div>}
+      </div>
 
-      {page === "capital" && <CapitalPage updateConnection={updateConnection} />}
-      {page === "rankings" && <RankingsPage onPick={addStock} updateConnection={updateConnection} />}
-      {page === "strong-unsealed" && <StrongUnsealedPage onPick={addStock} updateConnection={updateConnection} />}
-      {page === "stci" && <StciPage updateConnection={updateConnection} />}
-      {page === "board-review" && <BoardReviewPage updateConnection={updateConnection} />}
+      <div className="page-slot" style={{ display: page === "capital" ? "contents" : "none" }}>
+        {mountedPages.includes("capital") && <CapitalPage active={page === "capital"} updateConnection={updateConnection} />}
+      </div>
+      <div className="page-slot" style={{ display: page === "rankings" ? "contents" : "none" }}>
+        {mountedPages.includes("rankings") && <RankingsPage active={page === "rankings"} onPick={addStock} updateConnection={updateConnection} />}
+      </div>
+      <div className="page-slot" style={{ display: page === "strong-unsealed" ? "contents" : "none" }}>
+        {mountedPages.includes("strong-unsealed") && <StrongUnsealedPage active={page === "strong-unsealed"} onPick={addStock} updateConnection={updateConnection} />}
+      </div>
+      <div className="page-slot" style={{ display: page === "stci" ? "contents" : "none" }}>
+        {mountedPages.includes("stci") && <StciPage active={page === "stci"} updateConnection={updateConnection} />}
+      </div>
+      <div className="page-slot" style={{ display: page === "board-review" ? "contents" : "none" }}>
+        {mountedPages.includes("board-review") && <BoardReviewPage active={page === "board-review"} updateConnection={updateConnection} />}
+      </div>
 
       {menu && <div className="context-menu" role="menu" aria-label="自选股操作" style={{ left: Math.max(8, menu.x), top: Math.max(8, menu.y) }}>
         <button type="button" role="menuitem" onClick={() => togglePin(menu.key)}><span aria-hidden="true">◆</span>{pinned.has(menu.key) ? "取消固定" : "固定置顶"}</button>
@@ -2339,7 +2357,7 @@ function SectorPage({ onPick, updateConnection }: { onPick: (stock: Stock) => vo
   </div>;
 }
 
-function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
+function RankingsPage({ onPick, updateConnection, active = true }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void; active?: boolean }) {
   const [sort, setSort] = useState<RankingSort>("rise");
   const [mainBoardOnly, setMainBoardOnly] = useState(false);
   const [dataBySort, setDataBySort] = useState<Record<string, RankingData>>({});
@@ -2385,12 +2403,13 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
     let cancelled = false;
     let timer = 0;
     const tick = async () => {
+      if (!active) return;
       await load();
-      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 5_000 : 15_000);
+      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 3_000 : 8_000);
     };
     tick();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [load]);
+  }, [active, load]);
 
   const metricClass = (metric: "change" | "speed3" | "amount") => `ranking-value${((metric === "change" && (sort === "rise" || sort === "fall")) || metric === sort) ? " is-primary" : ""}`;
   const board = (items: Quote[]) => <section className="ranking-board panel">
@@ -2428,7 +2447,7 @@ function RankingsPage({ onPick, updateConnection }: { onPick: (stock: Stock) => 
   </main>;
 }
 
-function StrongUnsealedPage({ onPick, updateConnection }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
+function StrongUnsealedPage({ onPick, updateConnection, active = true }: { onPick: (stock: Stock) => void; updateConnection: (meta: MarketMeta, feed?: FeedKey) => void; active?: boolean }) {
   const [data, setData] = useState<StrongUnsealedData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -2463,12 +2482,13 @@ function StrongUnsealedPage({ onPick, updateConnection }: { onPick: (stock: Stoc
     let cancelled = false;
     let timer = 0;
     const tick = async () => {
+      if (!active) return;
       await load();
-      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 5_000 : 15_000);
+      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 3_000 : 8_000);
     };
     tick();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [load]);
+  }, [active, load]);
 
   const items = data?.items || [];
   return <main className="rankings-page strong-unsealed-page" id="main-content">
@@ -2513,7 +2533,7 @@ function SectorRankCardItem({ board, index }: { board: SectorRankCard; index: nu
   );
 }
 
-function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta, feed?: FeedKey) => void }) {
+function CapitalPage({ updateConnection, active = true }: { updateConnection: (meta: MarketMeta, feed?: FeedKey) => void; active?: boolean }) {
   const [data, setData] = useState<CapitalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -2585,13 +2605,14 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
     let cancelled = false;
     let timer = 0;
     const tick = async () => {
+      if (!active) return;
       if (document.visibilityState === "visible") await Promise.all([load(), loadSectors()]);
-      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 45_000 : 180_000);
+      if (!cancelled) timer = window.setTimeout(tick, isAShareTrading() ? 20_000 : 60_000);
     };
     const bootstrap = window.setTimeout(() => {
       try {
         const cached = JSON.parse(localStorage.getItem(CAPITAL_CACHE_KEY) || "null") as { savedAt?: number; data?: CapitalData } | null;
-        if (cached?.data && Date.now() - Number(cached.savedAt || 0) < 24 * 60 * 60_000) {
+        if (!dataRef.current && cached?.data && Date.now() - Number(cached.savedAt || 0) < 24 * 60 * 60_000) {
           dataRef.current = cached.data;
           setData(cached.data);
           setLoading(false);
@@ -2601,7 +2622,7 @@ function CapitalPage({ updateConnection }: { updateConnection: (meta: MarketMeta
       tick();
     }, 0);
     return () => { cancelled = true; window.clearTimeout(bootstrap); window.clearTimeout(timer); };
-  }, [load, loadSectors, updateConnection]);
+  }, [active, load, loadSectors, updateConnection]);
   const mainNet = data?.flow.at(-1)?.main ?? null;
   if (loading && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><LoadingRows count={12} /></section></div>;
   if (error && !data) return <div className="capital-layout" id="main-content"><section className="capital-main panel"><EmptyState title="资金流连接失败" detail={error} /><button type="button" className="retry" onClick={load}>重新连接</button></section></div>;
