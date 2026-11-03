@@ -1512,8 +1512,100 @@ function isAtEstimatedMainBoardLimit(quote: ReturnType<typeof parseQuote>) {
   return rates.some((rate) => Math.abs(quote.price! - Math.round(quote.prevClose! * (1 + rate) * 100) / 100) < 0.005);
 }
 
+// 东方财富 clist 接口近期对机房 / 境外出口 IP 直接重置连接，排行改用腾讯全市场快照（30 秒缓存后本地排序）。
+const TENCENT_RANK = "https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList";
+type TencentRankRow = Record<string, unknown>;
+
+let rankUniverseCache: { at: number; rows: TencentRankRow[] } | null = null;
+let rankUniverseTask: Promise<TencentRankRow[]> | null = null;
+
+async function tencentRankPage(offset: number): Promise<TencentRankRow[]> {
+  const result = await resilientText(
+    `${TENCENT_RANK}?board_code=aStock&sort_type=priceChange&direct=down&offset=${offset}&count=200`,
+    30_000,
+    { attempts: 1, timeoutMs: 2_500 },
+  );
+  const payload = JSON.parse(result.value) as { data?: { rank_list?: TencentRankRow[] } };
+  return Array.isArray(payload.data?.rank_list) ? payload.data.rank_list : [];
+}
+
+async function tencentRankUniverse(): Promise<TencentRankRow[]> {
+  const now = Date.now();
+  if (rankUniverseCache && now - rankUniverseCache.at < 30_000) return rankUniverseCache.rows;
+  if (!rankUniverseTask) {
+    rankUniverseTask = (async () => {
+      const rows: TencentRankRow[] = [];
+      const offsets = Array.from({ length: 30 }, (_, index) => index * 200);
+      for (let start = 0; start < offsets.length; start += 6) {
+        const pages = await Promise.all(offsets.slice(start, start + 6).map((offset) => tencentRankPage(offset).catch(() => [] as TencentRankRow[])));
+        for (const page of pages) rows.push(...page);
+        if (pages.every((page) => page.length === 0)) break;
+      }
+      if (rows.length) rankUniverseCache = { at: Date.now(), rows };
+      return rows;
+    })().finally(() => { rankUniverseTask = null; });
+  }
+  return rankUniverseTask;
+}
+
+function tencentRankQuote(item: TencentRankRow) {
+  const symbol = String(item.code ?? "");
+  const price = numeric(item.zxj);
+  const change = numeric(item.zd);
+  const amountWan = numeric(item.turnover);
+  const totalCapYi = numeric(item.zsz);
+  return {
+    code: symbol.slice(2),
+    market: symbol.startsWith("sh") ? 1 : 0,
+    name: String(item.name ?? ""),
+    price,
+    changePercent: numeric(item.zdf),
+    speed: numeric(item.speed),
+    high: null as number | null,
+    low: null as number | null,
+    open: null as number | null,
+    prevClose: price !== null && change !== null ? price - change : null,
+    volume: numeric(item.volume),
+    amount: amountWan === null ? null : amountWan * 10_000,
+    marketCap: totalCapYi === null ? null : totalCapYi * 100_000_000,
+    turnover: numeric(item.hsl),
+    amplitude: null as number | null,
+    netInflow: null as number | null,
+    limitUp: null as number | null,
+    limitDown: null as number | null,
+    limitState: null as "up" | "down" | null,
+    sealedAmount: null as number | null,
+    sector: "板块待更新",
+  };
+}
+
+function tencentRankItems(rows: TencentRankRow[], mainBoardOnly: boolean) {
+  return rows
+    .filter((item) => /^(sh|sz)\d{6}$/.test(String(item.code ?? "")))
+    .map(tencentRankQuote)
+    .filter((item) => item.code && item.name && item.price !== null && (!mainBoardOnly || isMainBoardStock(item)));
+}
+
 async function rankings(requestedSort: string, mainBoardOnly: boolean) {
   const sort: RankingSort = ["rise", "fall", "speed3", "amount"].includes(requestedSort) ? requestedSort as RankingSort : "rise";
+  const rankValue = (quote: ReturnType<typeof tencentRankQuote>) => sort === "speed3" ? quote.speed : sort === "amount" ? quote.amount : quote.changePercent;
+  try {
+    const rows = await tencentRankUniverse();
+    const items = tencentRankItems(rows, mainBoardOnly)
+      .filter((item) => rankValue(item) !== null)
+      .sort((left, right) => {
+        const delta = (rankValue(left) ?? 0) - (rankValue(right) ?? 0);
+        return sort === "fall" ? delta : -delta;
+      });
+    if (items.length >= 100) {
+      return {
+        items: items.slice(0, 100),
+        sort,
+        mainBoardOnly,
+        meta: { mode: "live" as CacheMode, updatedAt: Date.now(), source: "腾讯财经 · 沪深A股排名" },
+      };
+    }
+  } catch { /* 腾讯不可用时继续走东方财富 / 新浪回退。 */ }
   const loadSina = async (ascending: boolean) => {
     const pages = await Promise.all([1, 2].map((page) => resilientText(
       `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=100&sort=changepercent&asc=${ascending ? 1 : 0}&node=hs_a&symbol=`,
@@ -1597,24 +1689,32 @@ async function rankings(requestedSort: string, mainBoardOnly: boolean) {
 }
 
 async function strongUnsealed() {
+  try {
+    const rows = await tencentRankUniverse();
+    const items = tencentRankItems(rows, true)
+      .filter((quote) => (quote.changePercent ?? Number.NEGATIVE_INFINITY) >= 8 && !isAtEstimatedMainBoardLimit(quote));
+    if (items.length) return { items, meta: { mode: "live" as CacheMode, updatedAt: Date.now(), source: "腾讯财经 · 沪深主板" } };
+  } catch { /* 回退东方财富。 */ }
   const results: Array<Awaited<ReturnType<typeof resilientJson>>> = [];
   const rows: Array<Record<string, unknown>> = [];
-  for (let page = 1; page <= 5; page += 1) {
-    const result = await resilientJson(
-      `${EASTMONEY}/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(MAIN_BOARD_UNIVERSE)}&fields=${RANKING_FIELDS}`,
-      3_000,
-      { attempts: 1, timeoutMs: 3_500 },
-    );
-    results.push(result);
-    const pageRows = result.value?.data?.diff ?? [];
-    rows.push(...pageRows);
-    const lastChange = numeric(pageRows.at(-1)?.f3);
-    if (pageRows.length < 100 || lastChange === null || lastChange < 8) break;
-  }
+  try {
+    for (let page = 1; page <= 5; page += 1) {
+      const result = await resilientJson(
+        `${EASTMONEY}/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(MAIN_BOARD_UNIVERSE)}&fields=${RANKING_FIELDS}`,
+        3_000,
+        { attempts: 1, timeoutMs: 3_500 },
+      );
+      results.push(result);
+      const pageRows = result.value?.data?.diff ?? [];
+      rows.push(...pageRows);
+      const lastChange = numeric(pageRows.at(-1)?.f3);
+      if (pageRows.length < 100 || lastChange === null || lastChange < 8) break;
+    }
+  } catch { /* 上游不可用时返回空列表而不是整页报错。 */ }
   const items = rows
     .map((item) => ({ ...parseQuote(item), sector: String(item.f100 || "板块待更新") }))
     .filter((item) => item.code && item.name && item.price !== null && (item.changePercent ?? Number.NEGATIVE_INFINITY) >= 8 && isMainBoardStock(item) && !isAtEstimatedMainBoardLimit(item));
-  return { items, meta: { ...metaFrom(...results), source: "东方财富 · 沪深主板" } };
+  return { items, meta: results.length ? { ...metaFrom(...results), source: "东方财富 · 沪深主板" } : { mode: "stale" as CacheMode, updatedAt: 0, source: "强势未板暂不可用" } };
 }
 
 async function search(keyword: string) {

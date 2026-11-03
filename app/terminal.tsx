@@ -486,13 +486,18 @@ async function fetchDirectCapital(): Promise<CapitalData> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 4_500);
   try {
-    const payloads = await Promise.all(urls.map(async (url) => {
+    // 板块资金流（clist）接口频繁被上游重置，这里改为容错并行：拿不到的部分按空处理，不影响主图与资金曲线。
+    const payloads = await Promise.allSettled(urls.map(async (url) => {
       const response = await fetch(url, { signal: controller.signal, cache: "no-store", mode: "cors" });
       if (!response.ok) throw new Error("资金行情直连暂不可用");
       return response.json() as Promise<{ data?: { diff?: Array<Record<string, unknown>>; klines?: string[] } }>;
     }));
-    const [quotePayload, flowPayload, inflowPayload, outflowPayload] = payloads;
-    const sourceQuote = quotePayload.data?.diff?.[0] || {};
+    const pick = (index: number) => (payloads[index].status === "fulfilled" ? payloads[index].value : null) as { data?: { diff?: Array<Record<string, unknown>>; klines?: string[] } } | null;
+    const quotePayload = pick(0);
+    const flowPayload = pick(1);
+    const inflowPayload = pick(2);
+    const outflowPayload = pick(3);
+    const sourceQuote = quotePayload?.data?.diff?.[0] || {};
     const quote: Quote = {
       code: "000300",
       market: 1,
@@ -510,7 +515,7 @@ async function fetchDirectCapital(): Promise<CapitalData> {
       amplitude: finiteNumber(sourceQuote.f7),
       netInflow: finiteNumber(sourceQuote.f62),
     };
-    const flow = (flowPayload.data?.klines || []).map((row) => {
+    const flow = (flowPayload?.data?.klines || []).map((row) => {
       const parts = row.split(",");
       return { time: parts[0], main: finiteNumber(parts[1]), small: finiteNumber(parts[2]), medium: finiteNumber(parts[3]), large: finiteNumber(parts[4]) };
     });
@@ -519,12 +524,12 @@ async function fetchDirectCapital(): Promise<CapitalData> {
       .filter((item) => !sectorBlacklist.some((word) => String(item.f14 || "").includes(word)))
       .slice(0, 5)
       .map((item) => ({ code: String(item.f12 || ""), name: String(item.f14 || ""), amount: finiteNumber(item.f62) }));
-    if (!flow.length && !inflowPayload.data?.diff?.length && !outflowPayload.data?.diff?.length) throw new Error("资金行情直连暂无数据");
+    if (!flow.length && !inflowPayload?.data?.diff?.length && !outflowPayload?.data?.diff?.length) throw new Error("资金行情直连暂无数据");
     return {
       quote,
       flow,
-      inflow: cleanSectors(inflowPayload.data?.diff),
-      outflow: cleanSectors(outflowPayload.data?.diff),
+      inflow: cleanSectors(inflowPayload?.data?.diff),
+      outflow: cleanSectors(outflowPayload?.data?.diff),
       meta: { mode: "live", updatedAt: Date.now(), source: "东方财富直连" },
     };
   } finally {
@@ -2384,6 +2389,11 @@ function RankingsPage({ onPick, updateConnection, active = true }: { onPick: (st
       } catch {
         next = await fetchJson<RankingData>(`/api/market?action=rankings&sort=${sort}&board=${mainBoardOnly ? "main" : "all"}`, 12_000, 0);
       }
+      // 排行数据源已切换为腾讯，本身不带板块字段：用 ulist 的 f100 按批补齐并缓存 6 小时。
+      const sectorMap = await fetchStockSectors(next.items.map((item) => ({ ...item }))).catch(() => ({}) as Record<string, string>);
+      if (Object.keys(sectorMap).length) {
+        next = { ...next, items: next.items.map((item) => sectorMap[keyOf(item)] ? { ...item, sector: sectorMap[keyOf(item)] } : item) };
+      }
       dataRef.current[cacheKey] = next;
       setDataBySort((previous) => ({ ...previous, [cacheKey]: next }));
       if (requestId !== requestRef.current) return;
@@ -2462,6 +2472,10 @@ function StrongUnsealedPage({ onPick, updateConnection, active = true }: { onPic
         next = await fetchDirectStrongUnsealed();
       } catch {
         next = await fetchJson<StrongUnsealedData>("/api/market?action=strong-unsealed", 12_000, 0);
+      }
+      const sectorMap = await fetchStockSectors(next.items.map((item) => ({ ...item }))).catch(() => ({}) as Record<string, string>);
+      if (Object.keys(sectorMap).length) {
+        next = { ...next, items: next.items.map((item) => sectorMap[keyOf(item)] ? { ...item, sector: sectorMap[keyOf(item)] } : item) };
       }
       if (requestId !== requestRef.current) return;
       dataRef.current = next;
