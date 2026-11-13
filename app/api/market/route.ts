@@ -1717,22 +1717,60 @@ async function strongUnsealed() {
   return { items, meta: results.length ? { ...metaFrom(...results), source: "东方财富 · 沪深主板" } : { mode: "stale" as CacheMode, updatedAt: 0, source: "强势未板暂不可用" } };
 }
 
-async function search(keyword: string) {
-  const normalized = keyword.trim().slice(0, 30);
-  if (!normalized) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "腾讯搜索" } };
-  const url = `https://smartbox.gtimg.cn/s3/?q=${encodeURIComponent(normalized)}&t=all`;
+// 腾讯搜索的分类：GP-A 为沪深股票，ETF / QDII-ETF / LOF / FJ(封闭基金) 也都能正常取行情与K线。
+const SEARCH_CLASS = /^(GP-A|ETF|QDII-ETF|LOF|FJ)$/;
+const SEARCH_SUFFIX = /(ETF|LOF|QDII|基金|指数|联接|场内|场外)/gi;
+
+async function smartboxQuery(keyword: string) {
+  const url = `https://smartbox.gtimg.cn/s3/?q=${encodeURIComponent(keyword)}&t=all`;
   const result = await resilientTencentText(url, 60_000, { attempts: 1, timeoutMs: 1_800 });
   const match = result.value.match(/v_hint="([\s\S]*?)";?/);
-  if (!match) return { items: [], meta: { ...metaFrom(result), source: "腾讯搜索" } };
+  if (!match) return { items: [] as Array<{ code: string; market: number; name: string }>, result };
   let decoded = match[1];
   try { decoded = JSON.parse(`"${match[1].replace(/"/g, '\\"')}"`); } catch { /* Names without escape sequences are already usable. */ }
   const items = decoded.split("^").map((row) => {
     const [market, code, name, , classify] = row.split("~");
     return { code, market: market === "sh" ? 1 : market === "sz" ? 0 : -1, name, classify };
-  }).filter((item) => /^\d{6}$/.test(item.code) && [0, 1].includes(item.market) && item.classify.startsWith("GP-A"))
-    .slice(0, 12)
-    .map(({ classify: _classify, ...item }) => item);
-  return { items, meta: { ...metaFrom(result), source: "腾讯搜索" } };
+  }).filter((item) => /^\d{6}$/.test(item.code) && [0, 1].includes(item.market) && SEARCH_CLASS.test(item.classify))
+    .map(({ classify: _classify, name, code, market }) => ({ code, market, name }));
+  return { items, result };
+}
+
+/** 腾讯搜索按名称/拼音前缀匹配，词序与输入不一致（如「芯片华夏ETF」）时会查不到，需要逐级回退。 */
+function searchCandidates(keyword: string) {
+  const stripped = keyword.replace(SEARCH_SUFFIX, "").trim();
+  const candidates = [keyword];
+  if (stripped && stripped !== keyword) candidates.push(stripped);
+  const base = stripped || keyword;
+  for (const size of [4, 3, 2]) {
+    if (base.length > size) candidates.push(base.slice(0, size));
+  }
+  return Array.from(new Set(candidates)).slice(0, 4);
+}
+
+/** 回退查询时，把名称里命中原关键词片段更多的排在前面。 */
+function rankByChunks<T extends { name: string }>(items: T[], keyword: string) {
+  const chunks = keyword.replace(SEARCH_SUFFIX, " ").split(/[^0-9A-Za-z\u4e00-\u9fa5]+/).filter((chunk) => chunk.length >= 2);
+  if (chunks.length < 2) return items;
+  const score = (name: string) => chunks.filter((chunk) => name.includes(chunk)).length;
+  return [...items].sort((left, right) => score(right.name) - score(left.name));
+}
+
+async function search(keyword: string) {
+  const normalized = keyword.trim().slice(0, 30);
+  if (!normalized) return { items: [], meta: { mode: "live", updatedAt: Date.now(), source: "腾讯搜索" } };
+  let lastMeta: Awaited<ReturnType<typeof resilientTencentText>> | null = null;
+  for (const candidate of searchCandidates(normalized)) {
+    const { items, result } = await smartboxQuery(candidate);
+    lastMeta = result;
+    if (!items.length) continue;
+    const matched = candidate === normalized ? items : rankByChunks(items, normalized);
+    return {
+      items: matched.slice(0, 12),
+      meta: { ...metaFrom(result), source: candidate === normalized ? "腾讯搜索" : `腾讯搜索（按「${candidate}」匹配）` },
+    };
+  }
+  return { items: [], meta: lastMeta ? metaFrom(lastMeta) : { mode: "live" as CacheMode, updatedAt: Date.now(), source: "腾讯搜索" } };
 }
 
 export async function GET(request: Request) {

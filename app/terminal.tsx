@@ -1830,7 +1830,7 @@ export function StockTerminal() {
         if (!response.ok) throw new Error(data.error || "搜索暂不可用");
         const items = data.items || [];
         setSuggestions(items);
-        setSearchMessage(items.length ? "" : "没有找到匹配的沪深股票");
+        setSearchMessage(items.length ? "" : "没有找到匹配的股票 / ETF");
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
           setSuggestions([]);
